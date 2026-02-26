@@ -59,6 +59,13 @@ REGRAS DE EXTRAÇÃO:
 - Identifique corretamente a sigla do Estado (UF) da instituição ou edital (ex: SP, PR, MG, AM).
 - Se for uma instituição federal ou de abrangência nacional (ex: CNPq, FINEP, CAPES), use "BR" no campo estado.
 
+REGRAS DE INCERTEZA (OBRIGATÓRIO):
+- Sempre preencha o campo "incertezas" (lista). Se não houver nenhuma, retorne [] (lista vazia).
+- Se você NÃO tiver 100% de certeza de algum campo que preencheu (ex: estado, data_final_submissao, valor_total, publico_alvo), adicione um item em "incertezas" no formato:
+  {"campo": "estado", "valor": "BR", "motivo": "UF não encontrada claramente no texto; foi usado fallback"}
+- Se você colocou "BR" por não conseguir identificar a UF e NÃO houver evidência clara de que o edital é nacional/federal, isso DEVE virar incerteza.
+- Se você precisar usar "Indefinido" por falta de informação clara, isso DEVE virar incerteza.
+
 REGRAS DE APROVAÇÃO:
 - O edital só é APROVADO se:
   1. For identificado como "Fluxo Contínuo".
@@ -98,7 +105,8 @@ Formato obrigatório do JSON de resposta:
   "publico_alvo": "Ex: Pesquisadores, Empresas, etc",
   "data_final_submissao": "YYYY-MM-DD" ou "Fluxo Contínuo" ou "Indefinido",
   "fluxo_continuo": true|false,
-  "tags": ["Tecnologia & Inovação", "Ciência, Pesquisa & Desenvolvimento"]
+  "tags": ["Tecnologia & Inovação", "Ciência, Pesquisa & Desenvolvimento"],
+  "incertezas": []
 }}
 
 Contexto/Título do Bloco:
