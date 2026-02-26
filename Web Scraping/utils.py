@@ -426,6 +426,145 @@ def atualizar_edital_arquivos_json(edital_id: int, arquivos_json: list):
 # AUDITORIA & CAPTAÇÃO (NOVO)
 # ========================================================
 
+# URL do frontend para montar links no painel admin (opcional, mas útil)
+FRONTEND_APP_URL = os.getenv("FRONTEND_APP_URL", "http://127.0.0.1:5500/editais.html")
+
+# UF válidas (siglas)
+UF_VALIDAS = {
+    "AC","AL","AP","AM","BA","CE","DF","ES","GO","MA","MT","MS","MG","PA","PB","PR","PE","PI",
+    "RJ","RN","RS","RO","RR","SC","SP","SE","TO","BR"
+}
+
+# Instituições tipicamente federais/nacionais (heurística)
+INSTITUICOES_NACIONAIS = {
+    "CNPQ","FINEP","CAPES","MCTI","MEC","MS","MDIC","BNDES","EMBRAPA","ANA","ANP","ANVISA","IBAMA",
+    "BNB","BASA","BB","CAIXA","SERPRO","DATAPREV","FIOCRUZ"
+}
+
+def detectar_incertezas(dados_ia: dict, fonte=None) -> list[dict]:
+    # Heurística simples para marcar campos onde a IA provavelmente chutou / usou fallback.
+    # - Se já existir 'incertezas' no JSON, respeitamos e complementamos se necessário.
+    # Retorna lista de itens: {campo, valor, motivo}
+
+    if not isinstance(dados_ia, dict):
+        return []
+
+    incertezas: list[dict] = []
+
+    # 1) Se a IA já entregou, usa (e garante formato)
+    raw = dados_ia.get("incertezas") or dados_ia.get("campos_incertos")
+    if isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, dict) and item.get("campo"):
+                incertezas.append({
+                    "campo": str(item.get("campo")),
+                    "valor": item.get("valor"),
+                    "motivo": str(item.get("motivo") or "")
+                })
+
+    def _norm(s):
+        return (s or "").strip().upper()
+
+    inst = _norm(dados_ia.get("instituicao") or dados_ia.get("instituição"))
+    fonte_norm = _norm(fonte)
+
+    # 2) Estado
+    estado = (dados_ia.get("estado") or "").strip().upper()
+    if not estado:
+        incertezas.append({
+            "campo": "estado",
+            "valor": None,
+            "motivo": "UF não encontrada; campo ficou vazio"
+        })
+    else:
+        if estado not in UF_VALIDAS:
+            incertezas.append({
+                "campo": "estado",
+                "valor": estado,
+                "motivo": "Valor fora do conjunto de UFs conhecidas (possível extração errada)"
+            })
+        elif estado == "BR":
+            # BR pode ser correto para instituições federais. Se não parecer federal, marca.
+            parece_federal = any(k in inst for k in INSTITUICOES_NACIONAIS) or any(k in fonte_norm for k in INSTITUICOES_NACIONAIS)
+            if not parece_federal:
+                incertezas.append({
+                    "campo": "estado",
+                    "valor": "BR",
+                    "motivo": "UF não identificada com segurança; 'BR' parece fallback"
+                })
+
+    # 3) Data final
+    data_final = dados_ia.get("data_final_submissao")
+    if isinstance(data_final, str):
+        df = data_final.strip()
+        if df.lower() == "indefinido":
+            incertezas.append({
+                "campo": "data_final_submissao",
+                "valor": df,
+                "motivo": "Prazo não encontrado com segurança (Indefinido)"
+            })
+    elif data_final is None:
+        incertezas.append({
+            "campo": "data_final_submissao",
+            "valor": None,
+            "motivo": "Campo ausente (pode indicar extração incompleta)"
+        })
+
+    # 4) Valor total
+    valor = dados_ia.get("valor_total")
+    if isinstance(valor, str) and valor.strip().lower() == "indefinido":
+        incertezas.append({
+            "campo": "valor_total",
+            "valor": valor,
+            "motivo": "Valor total não encontrado com segurança (Indefinido)"
+        })
+
+    # Remove duplicados (campo+valor+motivo)
+    seen = set()
+    uniq = []
+    for it in incertezas:
+        key = (it.get("campo"), str(it.get("valor")), it.get("motivo"))
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(it)
+    return uniq
+
+
+def obter_editais_criados_desde(data_inicio: datetime.datetime) -> list[dict]:
+    # Retorna editais (id, titulo, fonte, json_data) criados a partir de data_inicio.
+    # Usado para montar detalhes de auditoria com incertezas.
+
+    if not SQL_CONNECTION_STRING:
+        return []
+
+    sql = """
+    SELECT id, titulo, link_origem, json_data
+    FROM editais
+    WHERE created_at >= ?
+    """
+
+    try:
+        with pyodbc.connect(SQL_CONNECTION_STRING) as cnxn:
+            cursor = cnxn.cursor()
+            cursor.execute(sql, data_inicio)
+            rows = cursor.fetchall()
+
+        resultado = []
+        for r in rows:
+            resultado.append({
+                "id": int(r[0]),
+                "titulo": str(r[1] or ""),
+                "fonte": str(r[2] or "Desconhecida"),
+                "json_data": str(r[3] or "{}")
+            })
+
+        return resultado
+    except Exception as e:
+        logger.error(f"Erro ao buscar editais do ciclo: {e}")
+        return []
+
+
 def obter_data_sql() -> datetime.datetime:
     """
     Obtém a data/hora atual diretamente do servidor SQL.
