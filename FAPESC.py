@@ -22,7 +22,7 @@ class FapescProcessor:
         utils.print_section(f"INICIANDO SCRAPING: {INSTITUICAO}")
 
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=False)
+            browser = p.chromium.launch(headless=True)
             page = browser.new_page()
 
             try:

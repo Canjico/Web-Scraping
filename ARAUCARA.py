@@ -69,7 +69,7 @@ class FapprProcessor:
         utils.print_section("INICIANDO SCRAPING: FUNDAÇÃO ARAUCÁRIA")
 
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=False)
+            browser = p.chromium.launch(headless=True)
             page = browser.new_page(extra_http_headers=HEADERS)
 
             try:

@@ -189,7 +189,7 @@ class PortalIndustriaProcessor:
         utils.print_section("INICIANDO SCRAPING: SENAI")
 
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=False)
+            browser = p.chromium.launch(headless=True)
             page = browser.new_page(ignore_https_errors=True)
 
             utils.page_goto_humano(page, BASE_URL, timeout=60000)

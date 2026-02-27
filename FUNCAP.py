@@ -43,7 +43,7 @@ class FuncapProcessor:
 
         # 1️⃣ Carrega HTML via Playwright
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=False)
+            browser = p.chromium.launch(headless=True)
             page = browser.new_page()
             utils.page_goto_humano(page, IFRAME_URL, timeout=120000)
             html = page.content()
