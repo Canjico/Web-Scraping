@@ -67,11 +67,11 @@ class FacepeProcessor:
         utils.print_section("INICIANDO SCRAPING: FACEPE")
 
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            browser = p.chromium.launch(headless=False)
             page = browser.new_page()
 
             try:
-                page.goto(BASE_URL, timeout=60000)
+                utils.page_goto_humano(page, BASE_URL, timeout=60000)
                 page.wait_for_selector("a.avia-button", timeout=15000)
 
                 soup = BeautifulSoup(page.content(), "html.parser")

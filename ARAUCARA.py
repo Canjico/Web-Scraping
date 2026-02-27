@@ -69,11 +69,11 @@ class FapprProcessor:
         utils.print_section("INICIANDO SCRAPING: FUNDAÇÃO ARAUCÁRIA")
 
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            browser = p.chromium.launch(headless=False)
             page = browser.new_page(extra_http_headers=HEADERS)
 
             try:
-                page.goto(URL_ALVO, timeout=60000)
+                utils.page_goto_humano(page, URL_ALVO, timeout=60000)
                 page.wait_for_selector("h3", timeout=15000)
 
                 soup = BeautifulSoup(page.content(), "html.parser")

@@ -30,11 +30,11 @@ class FapesProcessor:
         utils.print_section("INICIANDO SCRAPING: FAPES")
 
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            browser = p.chromium.launch(headless=False)
             page = browser.new_page()
 
             try:
-                page.goto(BASE_URL, timeout=120000)
+                utils.page_goto_humano(page, BASE_URL, timeout=120000)
 
                 links_pdfs = []
 

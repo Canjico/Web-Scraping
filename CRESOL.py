@@ -60,7 +60,7 @@ class CresolProcessor:
 
             try:
                 # ALTERAÇÃO: Mudança de networkidle para domcontentloaded para evitar travamentos em trackers
-                page.goto(URL_ALVO, wait_until="domcontentloaded", timeout=90000)
+                utils.page_goto_humano(page, URL_ALVO, wait_until="domcontentloaded", timeout=90000)
                 
                 # ALTERAÇÃO: Fecha cookies proativamente
                 utils.fechar_cookies(page)

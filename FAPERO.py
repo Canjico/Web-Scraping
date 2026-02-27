@@ -50,12 +50,12 @@ class FaperoProcessor:
         utils.print_section("INICIANDO SCRAPING: FAPERO")
 
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            browser = p.chromium.launch(headless=False)
             page = browser.new_page()
 
             try:
                 # Página inicial para pegar anos disponíveis
-                page.goto(f"{BASE_DOMAIN}/fapero/publicacoes/2025-2/", timeout=120000)
+                utils.page_goto_humano(page, f"{BASE_DOMAIN}/fapero/publicacoes/2025-2/", timeout=120000)
                 page.wait_for_load_state("networkidle")
 
                 # 1️⃣ Captura anos dinamicamente (somente números)
@@ -71,7 +71,7 @@ class FaperoProcessor:
                 for ano in anos_disponiveis:
                     url_ano = f"{BASE_DOMAIN}/fapero/publicacoes/{ano}-2/"
                     utils.logger.info(f"\n>>> Processando ano: {ano} ({url_ano})")
-                    page.goto(url_ano, timeout=120000)
+                    utils.page_goto_humano(page, url_ano, timeout=120000)
                     page.wait_for_load_state("networkidle")
 
                     # Captura links de arquivos de forma eficiente

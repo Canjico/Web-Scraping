@@ -42,9 +42,9 @@ class CocaColaProcessor:
         # 1️⃣ Coleta do conteúdo da página
         try:
             with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
+                browser = p.chromium.launch(headless=False)
                 page = browser.new_page()
-                page.goto(URL_ALVO, timeout=60000)
+                utils.page_goto_humano(page, URL_ALVO, timeout=60000)
                 texto_pagina = page.inner_text("body")
                 browser.close()
 

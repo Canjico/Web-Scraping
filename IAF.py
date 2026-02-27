@@ -61,7 +61,7 @@ class IafProcessor:
 
             try:
                 # Navegação mais robusta
-                page.goto(URL_ALVO, wait_until="networkidle", timeout=90000)
+                utils.page_goto_humano(page, URL_ALVO, wait_until="networkidle", timeout=90000)
                 page.wait_for_timeout(3000) # Pausa humana
 
                 # Verificação de Bloqueio
