@@ -45,7 +45,7 @@ class FuncapProcessor:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
-            page.goto(IFRAME_URL, timeout=120000)
+            utils.page_goto_humano(page, IFRAME_URL, timeout=120000)
             html = page.content()
             browser.close()
 

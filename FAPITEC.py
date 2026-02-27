@@ -30,7 +30,7 @@ class FapitecProcessor:
             page = browser.new_page()
 
             try:
-                page.goto(BASE_URL, timeout=120000)
+                utils.page_goto_humano(page, BASE_URL, timeout=120000)
 
                 links_editais = [
                     urljoin(BASE_DOMAIN, a.get_attribute("href"))
@@ -44,7 +44,7 @@ class FapitecProcessor:
                     utils.logger.info(f"\n>>> Processando edital: {url_edital}")
 
                     try:
-                        page.goto(url_edital, timeout=60000)
+                        utils.page_goto_humano(page, url_edital, timeout=60000)
 
                         texto_pagina = page.inner_text("body")
 

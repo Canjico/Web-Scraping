@@ -73,7 +73,7 @@ class FapprProcessor:
             page = browser.new_page(extra_http_headers=HEADERS)
 
             try:
-                page.goto(URL_ALVO, timeout=60000)
+                utils.page_goto_humano(page, URL_ALVO, timeout=60000)
                 page.wait_for_selector("h3", timeout=15000)
 
                 soup = BeautifulSoup(page.content(), "html.parser")

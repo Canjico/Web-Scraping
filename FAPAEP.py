@@ -129,7 +129,7 @@ class FapeapProcessor:
             page = browser.new_page()
 
             try:
-                page.goto(BASE_URL, timeout=120000)
+                utils.page_goto_humano(page, BASE_URL, timeout=120000)
 
                 # 🔹 FASE 1: Coleta via tabela
                 blocos = self._coletar_blocos_paginados(page)

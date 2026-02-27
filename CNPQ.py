@@ -48,7 +48,7 @@ class CnpqProcessor:
             page = browser.new_page(accept_downloads=True)
 
             try:
-                page.goto(URL_FONTE, timeout=180000)
+                utils.page_goto_humano(page, URL_FONTE, timeout=180000)
                 page.wait_for_selector("div.links-normas a.btn", timeout=20000)
 
                 botoes = page.query_selector_all("div.links-normas a.btn")

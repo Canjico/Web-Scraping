@@ -47,7 +47,7 @@ class ConfapProcessor:
             page = browser.new_page()
 
             try:
-                page.goto(BASE_URL, timeout=60000)
+                utils.page_goto_humano(page, BASE_URL, timeout=60000)
                 page.wait_for_selector("a.btn.btn-grayish", timeout=20000)
 
                 urls_editais = [
@@ -78,7 +78,7 @@ class ConfapProcessor:
         utils.logger.info(f">>> Processando edital: {url}")
 
         try:
-            page.goto(url, timeout=60000)
+            utils.page_goto_humano(page, url, timeout=60000)
 
             # =========================
             # EXTRAÇÃO ROBUSTA DE TÍTULO

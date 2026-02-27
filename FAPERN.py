@@ -70,7 +70,7 @@ class FapernProcessor:
             page = browser.new_page()
 
             try:
-                page.goto(BASE_URL, timeout=60000)
+                utils.page_goto_humano(page, BASE_URL, timeout=60000)
                 page.wait_for_selector("div.section a[href]", timeout=30000)
 
                 links = page.locator("div.section a[href]").all()

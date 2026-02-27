@@ -120,7 +120,7 @@ class FinepProcessor:
 
             try:
                 # Acessa a primeira página
-                page.goto(BASE_URL, timeout=120000)
+                utils.page_goto_humano(page, BASE_URL, timeout=120000)
 
                 # 🔹 FASE 1: Coletar todos os links paginados
                 urls_chamadas = self._coletar_links_editais(page)
@@ -132,7 +132,7 @@ class FinepProcessor:
                     utils.logger.info(f"\n>>> Processando chamada {i}/{len(urls_chamadas)}: {url_chamada}")
                     
                     try:
-                        page.goto(url_chamada, timeout=120000)
+                        utils.page_goto_humano(page, url_chamada, timeout=120000)
                         texto_pagina = page.inner_text("body")
 
                         # 1️⃣ Coleta links de arquivos

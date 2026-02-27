@@ -29,7 +29,7 @@ class FapespProcessor:
 
         utils.print_section("FASE 1: COLETA DE LINKS FAPESP")
 
-        page.goto(BASE_URL, wait_until="networkidle", timeout=120000)
+        utils.page_goto_humano(page, BASE_URL, wait_until="networkidle", timeout=120000)
         
         # Blindagem: esperar 'attached' em vez de 'visible' evita erros quando o elemento 
         # já está no DOM mas fora da viewport ou oculto por CSS.
@@ -102,7 +102,7 @@ class FapespProcessor:
                     )
 
                     try:
-                        page.goto(url_edital, wait_until="networkidle", timeout=120000)
+                        utils.page_goto_humano(page, url_edital, wait_until="networkidle", timeout=120000)
                         page.wait_for_timeout(2000)
 
                         texto_pagina = page.inner_text("body")

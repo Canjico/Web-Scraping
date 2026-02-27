@@ -26,7 +26,7 @@ class FapescProcessor:
             page = browser.new_page()
 
             try:
-                page.goto(BASE_URL, timeout=120000)
+                utils.page_goto_humano(page, BASE_URL, timeout=120000)
                 # Correção do seletor conforme análise do HTML da FAPESC (WordPress/UPK)
                 page.wait_for_selector("h3.upk-title a", timeout=30000)
 
@@ -49,7 +49,7 @@ class FapescProcessor:
                     utils.logger.info(f">>> Processando: {link}")
 
                     try:
-                        page.goto(link, timeout=60000)
+                        utils.page_goto_humano(page, link, timeout=60000)
                         texto_pagina = page.inner_text("body")
 
                         if not texto_pagina or len(texto_pagina) < 1000:

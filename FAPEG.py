@@ -48,7 +48,7 @@ class FapegProcessor:
             page = browser.new_page()
 
             try:
-                page.goto(BASE_URL, timeout=60000)
+                utils.page_goto_humano(page, BASE_URL, timeout=60000)
                 page.wait_for_selector("td a", timeout=20000)
 
                 # 1️⃣ Coleta links dos editais
@@ -66,7 +66,7 @@ class FapegProcessor:
                     utils.logger.info(f"\n>>> Processando edital {i}/{len(links_editais)}: {link_edital}")
 
                     try:
-                        page.goto(link_edital, timeout=60000)
+                        utils.page_goto_humano(page, link_edital, timeout=60000)
                         texto_pagina = page.inner_text("body")
 
                         # 3️⃣ Coleta PDFs

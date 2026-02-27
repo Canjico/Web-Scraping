@@ -61,7 +61,7 @@ class PortalIndustriaProcessor:
         utils.logger.info(f"\n>>> Processando: {url}")
 
         try:
-            page.goto(url, timeout=60000)
+            utils.page_goto_humano(page, url, timeout=60000)
             texto_pagina = page.evaluate("document.body.innerText") or ""
 
             links_arquivos = []
@@ -192,7 +192,7 @@ class PortalIndustriaProcessor:
             browser = p.chromium.launch(headless=True)
             page = browser.new_page(ignore_https_errors=True)
 
-            page.goto(BASE_URL, timeout=60000)
+            utils.page_goto_humano(page, BASE_URL, timeout=60000)
 
             links = set()
 

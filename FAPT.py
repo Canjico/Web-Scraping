@@ -30,7 +30,7 @@ class FaptProcessor:
             page = browser.new_page()
 
             try:
-                page.goto(URL_LISTA, timeout=120000)
+                utils.page_goto_humano(page, URL_LISTA, timeout=120000)
 
                 links_editais = []
 
@@ -51,7 +51,7 @@ class FaptProcessor:
                     utils.logger.info(f"\n>>> Processando edital: {url_edital}")
 
                     try:
-                        page.goto(url_edital, timeout=60000)
+                        utils.page_goto_humano(page, url_edital, timeout=60000)
                         texto_pagina = page.inner_text("body")
 
                         links_anexos = []

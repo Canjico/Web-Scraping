@@ -73,7 +73,7 @@ class FapealProcessor:
             page = browser.new_page()
 
             try:
-                page.goto(BASE_URL, timeout=60000)
+                utils.page_goto_humano(page, BASE_URL, timeout=60000)
                 page.wait_for_selector("h2.entry-title a", timeout=20000)
 
                 posts = page.locator("h2.entry-title a").evaluate_all(
@@ -84,7 +84,7 @@ class FapealProcessor:
 
                 for post_url in posts:
                     utils.logger.info(f"\n>>> Processando post: {post_url}")
-                    page.goto(post_url, timeout=60000)
+                    utils.page_goto_humano(page, post_url, timeout=60000)
 
                     texto_pagina = page.inner_text("body")
 

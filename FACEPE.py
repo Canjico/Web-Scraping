@@ -71,7 +71,7 @@ class FacepeProcessor:
             page = browser.new_page()
 
             try:
-                page.goto(BASE_URL, timeout=60000)
+                utils.page_goto_humano(page, BASE_URL, timeout=60000)
                 page.wait_for_selector("a.avia-button", timeout=15000)
 
                 soup = BeautifulSoup(page.content(), "html.parser")

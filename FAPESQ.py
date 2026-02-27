@@ -28,7 +28,7 @@ class FapesqProcessor:
             page = browser.new_page()
 
             try:
-                page.goto(BASE_URL_LISTA, timeout=120000)
+                utils.page_goto_humano(page, BASE_URL_LISTA, timeout=120000)
                 page.wait_for_selector("a.summary.url", timeout=30000)
 
                 links = []
@@ -43,7 +43,7 @@ class FapesqProcessor:
                     utils.logger.info(f"\n>>> Processando edital: {link}")
 
                     try:
-                        page.goto(link, timeout=60000)
+                        utils.page_goto_humano(page, link, timeout=60000)
 
                         texto_pagina = page.inner_text("body")
 
