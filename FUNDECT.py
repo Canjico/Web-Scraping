@@ -43,11 +43,11 @@ class FundectProcessor:
         utils.print_section("INICIANDO SCRAPING: FUNDECT")
 
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            browser = p.chromium.launch(headless=False)
             page = browser.new_page()
 
             try:
-                page.goto(BASE_URL, timeout=60000)
+                utils.page_goto_humano(page, BASE_URL, timeout=60000)
                 utils.fechar_cookies(page)
 
                 urls_editais = list({
@@ -62,7 +62,7 @@ class FundectProcessor:
                     utils.logger.info(f"\n>>> Processando edital: {url}")
 
                     try:
-                        page.goto(url, timeout=60000)
+                        utils.page_goto_humano(page, url, timeout=60000)
 
                         texto_pagina = page.inner_text("body")
                         textos_analise = [texto_pagina] if texto_pagina else []

@@ -59,7 +59,7 @@ class TetraPakProcessor:
             page = context.new_page()
 
             try:
-                page.goto(URL_ALVO, wait_until="networkidle", timeout=90000)
+                utils.page_goto_humano(page, URL_ALVO, wait_until="networkidle", timeout=90000)
                 page.wait_for_timeout(3000)
 
                 html_content = page.content()

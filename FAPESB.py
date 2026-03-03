@@ -20,11 +20,11 @@ class FapesbProcessor:
         utils.print_section("INICIANDO SCRAPING: FAPESB")
 
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            browser = p.chromium.launch(headless=False)
             page = browser.new_page()
 
             try:
-                page.goto(BASE_URL, timeout=120000)
+                utils.page_goto_humano(page, BASE_URL, timeout=120000)
 
                 # 1️⃣ Coletar todos os anos disponíveis dinamicamente
                 anos_disponiveis = [
@@ -62,7 +62,7 @@ class FapesbProcessor:
                 for url_edital in todos_links_editais:
                     utils.logger.info(f"\n>>> Processando edital: {url_edital}")
                     try:
-                        page.goto(url_edital, timeout=60000)
+                        utils.page_goto_humano(page, url_edital, timeout=60000)
                         texto_pagina = page.inner_text("body")
 
                         links_anexos = []

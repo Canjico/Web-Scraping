@@ -8,6 +8,8 @@ import zipfile
 import hashlib
 import datetime
 import logging
+import random
+import time
 import requests
 import pyodbc
 import xml.etree.ElementTree as ET
@@ -246,6 +248,57 @@ def fechar_cookies(page):
     except:
         pass
 
+
+def page_goto_humano(page, url: str, tentativas: int = 2, **kwargs):
+    """
+    Navegação com pequenos sinais de comportamento humano para reduzir bloqueios
+    em `page.goto` sem alterar o fluxo principal dos scrapers.
+    """
+    parametros = dict(kwargs)
+    parametros.setdefault("wait_until", "domcontentloaded")
+    parametros.setdefault("timeout", 120000)
+
+    # Ajustes comuns de automação para reduzir detecção.
+    try:
+        page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
+    except Exception:
+        pass
+
+    try:
+        page.set_extra_http_headers({
+            "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7"
+        })
+    except Exception:
+        pass
+
+    ultima_excecao = None
+
+    for tentativa in range(1, tentativas + 1):
+        try:
+            # Pequeno atraso para evitar padrão de bot em rajada.
+            time.sleep(random.uniform(0.4, 1.2))
+            response = page.goto(url, **parametros)
+
+            try:
+                page.mouse.move(random.randint(100, 900), random.randint(120, 580), steps=random.randint(6, 18))
+                page.wait_for_timeout(random.randint(350, 1100))
+                page.mouse.wheel(0, random.randint(200, 900))
+                page.wait_for_timeout(random.randint(300, 900))
+            except Exception:
+                pass
+
+            return response
+
+        except Exception as exc:
+            ultima_excecao = exc
+            logger.warning(f"Falha no page.goto ({tentativa}/{tentativas}) para {url}: {exc}")
+
+            # Em nova tentativa, relaxa para não depender de `networkidle`.
+            parametros["wait_until"] = "domcontentloaded"
+            time.sleep(random.uniform(0.8, 1.6))
+
+    raise ultima_excecao
+
 def safe_rmtree(path):
     try:
         if os.path.exists(path):
@@ -301,10 +354,14 @@ def obter_ou_criar_edital(titulo: str, fonte: str, url_edital: str = None) -> in
             # Se a coluna hash_edital não existir (o que seria estranho neste ponto), fallback
             pass
         
-        # 2. Fallback: busca por título exato SOMENTE se não usamos URL hash
-        # Se usamos URL hash e não achamos, é um edital novo, não queremos conflitar com títulos parecidos
+        # 2. Fallback: busca por título exato (evita duplicar edital em scripts sem URL dedicada)
         if not url_edital:
             try:
+                cursor.execute("SELECT id FROM editais WHERE titulo = ? AND link_origem = ?", titulo, fonte)
+                row = cursor.fetchone()
+                if row:
+                    return int(row[0])
+
                 cursor.execute("SELECT id FROM editais WHERE titulo = ?", titulo)
                 row = cursor.fetchone()
                 if row:
