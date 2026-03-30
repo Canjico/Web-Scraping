@@ -17,6 +17,9 @@ DEFAULT_RESPONSES_API_VERSION = "2025-04-01-preview"
 DEFAULT_RESPONSES_ENDPOINT = "https://thall-mj3g48g6-eastus2.cognitiveservices.azure.com/openai/responses"
 DEFAULT_WEBCHECK_DEPLOYMENT = "gpt-5.2-chat"
 
+_HOST_ALLOWED_CHARS_RE = re.compile(r"^[a-z0-9.-]+$")
+_HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+
 _STATUS_CANONICAL = {"aberto", "encerrado", "suspenso", "revogado", "incerto"}
 
 _STATUS_KEYWORDS = {
@@ -115,9 +118,22 @@ def _normalize_host(url_or_host: Any) -> str:
         parsed = urlparse(raw)
     except Exception:
         return ""
-    host = (parsed.hostname or "").strip().lower()
+    host = (parsed.hostname or "").strip().lower().rstrip(".")
     if host.startswith("www."):
         host = host[4:]
+    if not host:
+        return ""
+    if not _HOST_ALLOWED_CHARS_RE.fullmatch(host):
+        return ""
+    if ".." in host:
+        return ""
+    if "." not in host:
+        return ""
+    labels = host.split(".")
+    if any(not label for label in labels):
+        return ""
+    if any(not _HOST_LABEL_RE.fullmatch(label) for label in labels):
+        return ""
     return host
 
 
@@ -475,51 +491,155 @@ Retorne JSON com este formato:
 """.strip()
 
 
+class WebCheckError(RuntimeError):
+    def __init__(
+        self,
+        *,
+        category: str,
+        message: str,
+        profile: str = "",
+        status_code: int | None = None,
+        body: str = "",
+    ) -> None:
+        super().__init__(message)
+        self.category = category
+        self.profile = profile
+        self.status_code = status_code
+        self.body = body
+
+
+class WebCheckConfigError(WebCheckError):
+    pass
+
+
+class WebCheckHTTPError(WebCheckError):
+    pass
+
+
+class WebCheckParsingError(WebCheckError):
+    pass
+
+
+class WebCheckToolError(WebCheckError):
+    pass
+
+
+def _pick_env_value(*env_names: str, fallback: str = "") -> tuple[str, str]:
+    for env_name in env_names:
+        value = _normalize_text(os.getenv(env_name))
+        if value:
+            return value, env_name
+    if fallback:
+        return fallback, "<default>"
+    return "", ""
+
+
+def _ensure_responses_endpoint(endpoint: str) -> str:
+    value = _normalize_text(endpoint).rstrip("/")
+    if not value:
+        return ""
+    if value.endswith("/openai/responses"):
+        return value
+    if value.endswith("/openai"):
+        return f"{value}/responses"
+    return f"{value}/openai/responses"
+
+
+def _resolve_web_check_config(profile: str) -> dict[str, Any]:
+    profile_key = _normalize_text(profile).lower()
+    if profile_key not in {"dedicada", "principal"}:
+        profile_key = "dedicada"
+
+    if profile_key == "dedicada":
+        api_key, api_key_src = _pick_env_value(
+            "AZURE_OPENAI_WEBCHECK_API_KEY",
+            "AZURE_OPENAI_API_KEY",
+            "AZURE_OPENAI_KEY",
+            "AZURE_API_KEY",
+        )
+        endpoint_raw, endpoint_src = _pick_env_value(
+            "AZURE_OPENAI_WEBCHECK_ENDPOINT",
+            "AZURE_OPENAI_RESPONSES_ENDPOINT",
+            "AZURE_OPENAI_ENDPOINT",
+            "AZURE_ENDPOINT",
+            fallback=DEFAULT_RESPONSES_ENDPOINT,
+        )
+        deployment, deployment_src = _pick_env_value(
+            "AZURE_OPENAI_WEBCHECK_DEPLOYMENT",
+            "AZURE_OPENAI_DEPLOYMENT",
+            fallback=DEFAULT_WEBCHECK_DEPLOYMENT,
+        )
+        api_version, api_version_src = _pick_env_value(
+            "AZURE_OPENAI_WEBCHECK_API_VERSION",
+            "AZURE_OPENAI_RESPONSES_API_VERSION",
+            "AZURE_OPENAI_API_VERSION",
+            fallback=DEFAULT_RESPONSES_API_VERSION,
+        )
+    else:
+        api_key, api_key_src = _pick_env_value(
+            "AZURE_OPENAI_API_KEY",
+            "AZURE_OPENAI_KEY",
+            "AZURE_API_KEY",
+            "AZURE_OPENAI_WEBCHECK_API_KEY",
+        )
+        endpoint_raw, endpoint_src = _pick_env_value(
+            "AZURE_OPENAI_RESPONSES_ENDPOINT",
+            "AZURE_OPENAI_ENDPOINT",
+            "AZURE_ENDPOINT",
+            fallback=DEFAULT_RESPONSES_ENDPOINT,
+        )
+        deployment, deployment_src = _pick_env_value(
+            "AZURE_OPENAI_DEPLOYMENT",
+            fallback=DEFAULT_WEBCHECK_DEPLOYMENT,
+        )
+        api_version, api_version_src = _pick_env_value(
+            "AZURE_OPENAI_RESPONSES_API_VERSION",
+            "AZURE_OPENAI_WEBCHECK_API_VERSION",
+            "AZURE_OPENAI_API_VERSION",
+            fallback=DEFAULT_RESPONSES_API_VERSION,
+        )
+
+    endpoint = _ensure_responses_endpoint(endpoint_raw)
+    sources = {
+        "api_key": api_key_src,
+        "endpoint": endpoint_src,
+        "deployment": deployment_src,
+        "api_version": api_version_src,
+    }
+    if profile_key == "dedicada":
+        uses_primary_fallback = any(
+            src and src not in {"<default>"} and not src.startswith("AZURE_OPENAI_WEBCHECK_")
+            for src in sources.values()
+        )
+    else:
+        uses_primary_fallback = any(src and src.startswith("AZURE_OPENAI_WEBCHECK_") for src in sources.values())
+
+    return {
+        "profile": profile_key,
+        "api_key": api_key,
+        "endpoint": endpoint,
+        "deployment": deployment,
+        "api_version": api_version,
+        "endpoint_host": _normalize_host(endpoint),
+        "sources": sources,
+        "uses_primary_fallback": bool(uses_primary_fallback),
+    }
+
+
 def _resolve_api_key() -> str:
-    return (
-        _normalize_text(os.getenv("AZURE_OPENAI_WEBCHECK_API_KEY"))
-        or _normalize_text(os.getenv("AZURE_OPENAI_API_KEY"))
-        or _normalize_text(os.getenv("AZURE_OPENAI_KEY"))
-        or _normalize_text(os.getenv("AZURE_API_KEY"))
-    )
+    return _resolve_web_check_config("dedicada").get("api_key", "")
 
 
 def _resolve_responses_endpoint() -> str:
-    explicit = (
-        _normalize_text(os.getenv("AZURE_OPENAI_WEBCHECK_ENDPOINT"))
-        or _normalize_text(os.getenv("AZURE_OPENAI_RESPONSES_ENDPOINT"))
-    )
-    if explicit:
-        endpoint = explicit.rstrip("/")
-    else:
-        endpoint = _normalize_text(os.getenv("AZURE_OPENAI_ENDPOINT"))
-        if not endpoint:
-            endpoint = _normalize_text(os.getenv("AZURE_ENDPOINT"))
-        if not endpoint:
-            endpoint = DEFAULT_RESPONSES_ENDPOINT
-        endpoint = endpoint.rstrip("/")
-
-    if endpoint.endswith("/openai/responses"):
-        return endpoint
-    if endpoint.endswith("/openai"):
-        return f"{endpoint}/responses"
-    return f"{endpoint}/openai/responses"
+    return _resolve_web_check_config("dedicada").get("endpoint", "")
 
 
 def _resolve_responses_api_version() -> str:
-    return (
-        _normalize_text(os.getenv("AZURE_OPENAI_WEBCHECK_API_VERSION"))
-        or _normalize_text(os.getenv("AZURE_OPENAI_RESPONSES_API_VERSION"))
-        or DEFAULT_RESPONSES_API_VERSION
-    )
+    return _resolve_web_check_config("dedicada").get("api_version", "")
 
 
 def _resolve_deployment() -> str:
-    return (
-        _normalize_text(os.getenv("AZURE_OPENAI_WEBCHECK_DEPLOYMENT"))
-        or _normalize_text(os.getenv("AZURE_OPENAI_DEPLOYMENT"))
-        or DEFAULT_WEBCHECK_DEPLOYMENT
-    )
+    return _resolve_web_check_config("dedicada").get("deployment", "")
 
 
 def _extract_output_text(response_json: dict[str, Any]) -> str:
@@ -782,6 +902,8 @@ def _default_web_check_payload(
             "fonte_secundaria": False,
         },
         "erro": None,
+        "erro_categoria": None,
+        "configuracao_web_check_utilizada": None,
         "executado_em": _now_iso(),
         "cache": {
             "chave": cache_key,
@@ -791,45 +913,285 @@ def _default_web_check_payload(
     }
 
 
-def _call_azure_web_search(prompt: str, allowed_domains: set[str] | None = None) -> dict[str, Any]:
-    api_key = _resolve_api_key()
-    endpoint = _resolve_responses_endpoint()
-    deployment = _resolve_deployment()
-    api_version = _resolve_responses_api_version()
+def _response_body_as_text(response: requests.Response) -> str:
+    try:
+        parsed = response.json()
+        return json.dumps(parsed, ensure_ascii=False)
+    except Exception:
+        text = _normalize_text(response.text)
+        return text or "<body_vazio>"
 
-    if not api_key:
-        raise RuntimeError("AZURE_OPENAI_WEBCHECK_API_KEY/AZURE_OPENAI_API_KEY/AZURE_OPENAI_KEY nao configurada para Web Check.")
-    if not endpoint:
-        raise RuntimeError("Endpoint do Responses API nao configurado para Web Check.")
-    if not deployment:
-        raise RuntimeError("AZURE_OPENAI_WEBCHECK_DEPLOYMENT nao configurado.")
 
+def _build_web_search_tool(allowed_domains: set[str] | None = None) -> dict[str, Any]:
     tool: dict[str, Any] = {"type": "web_search"}
-    normalized_domains = sorted({_normalize_host(item) for item in (allowed_domains or set()) if _normalize_host(item)})
+
+    raw_items: set[str] = set()
+    valid_domains: set[str] = set()
+    for item in (allowed_domains or set()):
+        raw = _normalize_text(item)
+        if raw:
+            raw_items.add(raw)
+        normalized = _normalize_host(item)
+        if normalized:
+            valid_domains.add(normalized)
+
+    normalized_domains = sorted(valid_domains)
+    if raw_items and len(normalized_domains) < len(raw_items):
+        logger.warning(
+            "[WEB-CHECK] Ignorando %s dominio(s) invalido(s) no filtro de web_search.",
+            len(raw_items) - len(normalized_domains),
+        )
     if normalized_domains:
         tool["filters"] = {"allowed_domains": normalized_domains}
+    return tool
 
-    payload = {
+
+def _build_responses_payload(prompt: str, deployment: str, allowed_domains: set[str] | None = None) -> dict[str, Any]:
+    return {
         "model": deployment,
-        "tools": [tool],
+        "tools": [_build_web_search_tool(allowed_domains=allowed_domains)],
         "tool_choice": "auto",
         "include": ["web_search_call.action.sources"],
         "input": prompt,
     }
+
+
+def _looks_like_tool_http_error(status_code: int, body: str) -> bool:
+    if status_code != 400:
+        return False
+    body_lower = _normalize_text(body).lower()
+    if not body_lower:
+        return False
+    return (
+        "invalid domain" in body_lower
+        or "\"param\": \"tools\"" in body_lower
+        or "'param': 'tools'" in body_lower
+        or "web_search" in body_lower
+    )
+
+
+def _validate_web_check_config(config: dict[str, Any]) -> None:
+    profile = _normalize_text(config.get("profile"))
+    if not _normalize_text(config.get("api_key")):
+        raise WebCheckConfigError(
+            category="erro_configuracao",
+            profile=profile,
+            message=f"[WEB-CHECK] Configuracao invalida ({profile}): api_key ausente.",
+        )
+    if not _normalize_text(config.get("endpoint")):
+        raise WebCheckConfigError(
+            category="erro_configuracao",
+            profile=profile,
+            message=f"[WEB-CHECK] Configuracao invalida ({profile}): endpoint ausente.",
+        )
+    if not _normalize_text(config.get("deployment")):
+        raise WebCheckConfigError(
+            category="erro_configuracao",
+            profile=profile,
+            message=f"[WEB-CHECK] Configuracao invalida ({profile}): deployment ausente.",
+        )
+
+
+def _raise_if_web_search_tool_failed(response_json: dict[str, Any], profile: str) -> None:
+    top_error = response_json.get("error")
+    if isinstance(top_error, dict):
+        detail = json.dumps(top_error, ensure_ascii=False)
+        raise WebCheckToolError(
+            category="erro_tool_web_search",
+            profile=profile,
+            message=f"[WEB-CHECK] erro_tool_web_search profile={profile} detail={detail}",
+            body=detail,
+        )
+
+    response_status = _normalize_text(response_json.get("status")).lower()
+    if response_status in {"failed", "error"}:
+        detail = _normalize_text(response_json.get("status")) or "status=failed"
+        raise WebCheckToolError(
+            category="erro_tool_web_search",
+            profile=profile,
+            message=f"[WEB-CHECK] erro_tool_web_search profile={profile} detail={detail}",
+            body=detail,
+        )
+
+    output_items = response_json.get("output")
+    if not isinstance(output_items, list):
+        return
+    for item in output_items:
+        if not isinstance(item, dict):
+            continue
+        if _normalize_text(item.get("type")) != "web_search_call":
+            continue
+        item_status = _normalize_text(item.get("status")).lower()
+        item_error = item.get("error")
+        if item_status in {"failed", "error"} or isinstance(item_error, dict):
+            detail = json.dumps(item_error, ensure_ascii=False) if isinstance(item_error, dict) else item_status or "tool_failed"
+            raise WebCheckToolError(
+                category="erro_tool_web_search",
+                profile=profile,
+                message=f"[WEB-CHECK] erro_tool_web_search profile={profile} detail={detail}",
+                body=detail,
+            )
+
+
+def _call_azure_web_search_once(
+    *,
+    prompt: str,
+    allowed_domains: set[str] | None = None,
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    _validate_web_check_config(config)
+    profile = _normalize_text(config.get("profile"))
+    endpoint = _normalize_text(config.get("endpoint"))
+    deployment = _normalize_text(config.get("deployment"))
+    api_version = _normalize_text(config.get("api_version")) or DEFAULT_RESPONSES_API_VERSION
+
+    payload = _build_responses_payload(prompt=prompt, deployment=deployment, allowed_domains=allowed_domains)
     headers = {
-        "api-key": api_key,
+        "api-key": _normalize_text(config.get("api_key")),
         "Content-Type": "application/json",
     }
+    timeout_seconds = _request_timeout_seconds()
 
-    response = requests.post(
-        endpoint,
-        params={"api-version": api_version},
-        headers=headers,
-        json=payload,
-        timeout=_request_timeout_seconds(),
+    try:
+        response = requests.post(
+            endpoint,
+            params={"api-version": api_version},
+            headers=headers,
+            json=payload,
+            timeout=timeout_seconds,
+        )
+    except requests.RequestException as exc:
+        raise WebCheckHTTPError(
+            category="erro_http",
+            profile=profile,
+            message=f"[WEB-CHECK] erro_http profile={profile} detalhe={exc}",
+        ) from exc
+
+    if response.status_code < 200 or response.status_code >= 300:
+        body = _response_body_as_text(response)
+        logger.error(
+            "[WEB-CHECK] HTTP nao-2xx profile=%s status=%s host=%s deployment=%s api_version=%s body=%s",
+            profile,
+            response.status_code,
+            _normalize_text(config.get("endpoint_host")),
+            deployment,
+            api_version,
+            body,
+        )
+        if _looks_like_tool_http_error(response.status_code, body):
+            raise WebCheckToolError(
+                category="erro_tool_web_search",
+                profile=profile,
+                status_code=response.status_code,
+                body=body,
+                message=f"[WEB-CHECK] status={response.status_code} body={body}",
+            )
+        raise WebCheckHTTPError(
+            category="erro_http",
+            profile=profile,
+            status_code=response.status_code,
+            body=body,
+            message=f"[WEB-CHECK] status={response.status_code} body={body}",
+        )
+
+    try:
+        response_json = response.json() if response.content else {}
+    except Exception as exc:
+        raise WebCheckParsingError(
+            category="erro_parsing",
+            profile=profile,
+            message=f"[WEB-CHECK] erro_parsing profile={profile} detalhe=Resposta nao JSON: {exc}",
+        ) from exc
+
+    if not isinstance(response_json, dict):
+        raise WebCheckParsingError(
+            category="erro_parsing",
+            profile=profile,
+            message=f"[WEB-CHECK] erro_parsing profile={profile} detalhe=Resposta JSON nao e objeto.",
+        )
+
+    _raise_if_web_search_tool_failed(response_json, profile=profile)
+    return response_json
+
+
+def _can_fallback_to_primary(exc: Exception) -> bool:
+    return isinstance(exc, (WebCheckConfigError, WebCheckHTTPError, WebCheckToolError))
+
+
+def _call_azure_web_search(
+    *,
+    prompt: str,
+    allowed_domains: set[str] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    dedicated = _resolve_web_check_config("dedicada")
+    primary = _resolve_web_check_config("principal")
+
+    attempts: list[dict[str, Any]] = []
+    seen_signatures: set[tuple[str, str, str, str]] = set()
+    for config in (dedicated, primary):
+        signature = (
+            _normalize_text(config.get("endpoint")),
+            _normalize_text(config.get("deployment")),
+            _normalize_text(config.get("api_version")),
+            _normalize_text((config.get("sources") or {}).get("api_key")),
+        )
+        if signature in seen_signatures:
+            continue
+        seen_signatures.add(signature)
+        attempts.append(config)
+
+    if not attempts:
+        raise WebCheckConfigError(
+            category="erro_configuracao",
+            profile="dedicada",
+            message="[WEB-CHECK] Nenhuma configuracao de Web Check disponivel.",
+        )
+
+    last_error: Exception | None = None
+    for idx, config in enumerate(attempts):
+        profile = _normalize_text(config.get("profile")) or "desconhecida"
+        host = _normalize_text(config.get("endpoint_host"))
+        deployment = _normalize_text(config.get("deployment"))
+        api_version = _normalize_text(config.get("api_version"))
+        logger.info(
+            "[WEB-CHECK] Tentativa profile=%s host=%s deployment=%s api_version=%s habilitado=%s.",
+            profile,
+            host or "<vazio>",
+            deployment or "<vazio>",
+            api_version or "<vazio>",
+            is_web_check_enabled(),
+        )
+        if config.get("uses_primary_fallback"):
+            logger.warning(
+                "[WEB-CHECK] Configuracao %s usando fallback de variaveis (%s).",
+                profile,
+                config.get("sources"),
+            )
+
+        try:
+            response_json = _call_azure_web_search_once(
+                prompt=prompt,
+                allowed_domains=allowed_domains,
+                config=config,
+            )
+            logger.info("[WEB-CHECK] Web search executado com profile=%s.", profile)
+            return response_json, config
+        except Exception as exc:
+            last_error = exc
+            logger.error("[WEB-CHECK] Falha na configuracao %s: %s", profile, exc)
+            has_next = idx < (len(attempts) - 1)
+            if profile == "dedicada" and has_next and _can_fallback_to_primary(exc):
+                logger.warning("[WEB-CHECK] Tentando fallback para configuracao principal.")
+                continue
+            break
+
+    if isinstance(last_error, Exception):
+        raise last_error
+    raise WebCheckHTTPError(
+        category="erro_http",
+        profile="dedicada",
+        message="[WEB-CHECK] Falha desconhecida na chamada de web search.",
     )
-    response.raise_for_status()
-    return response.json() if response.content else {}
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -913,8 +1275,19 @@ def executar_web_check(
 
     logger.info("[WEB-CHECK] Iniciando web search para edital_id=%s.", edital_id)
     try:
-        response_json = _call_azure_web_search(prompt, allowed_domains=official_domains)
+        response_json, config_used = _call_azure_web_search(
+            prompt=prompt,
+            allowed_domains=official_domains,
+        )
+        profile_usado = _normalize_text(config_used.get("profile")) or "desconhecida"
+        base["configuracao_web_check_utilizada"] = profile_usado
         response_text = _extract_output_text(response_json)
+        if not response_text:
+            raise WebCheckParsingError(
+                category="erro_parsing",
+                profile=profile_usado,
+                message=f"[WEB-CHECK] erro_parsing profile={profile_usado} detalhe=Resposta sem output_text.",
+            )
         model_payload = _extract_json_from_text(response_text)
 
         api_sources = _extract_sources_from_response(response_json)
@@ -1091,6 +1464,7 @@ def executar_web_check(
                 "fonte_secundaria": bool(tem_web_secundaria),
             },
             "erro": None,
+            "erro_categoria": None,
             "executado_em": _now_iso(),
             "cache": {
                 "chave": cache_key,
@@ -1098,6 +1472,7 @@ def executar_web_check(
                 "ttl_horas": _cache_ttl_hours(),
             },
         }
+        result["configuracao_web_check_utilizada"] = profile_usado
 
         if result.get("divergencia_status"):
             logger.warning(
@@ -1115,9 +1490,58 @@ def executar_web_check(
             )
         return result
 
+    except WebCheckConfigError as exc:
+        logger.error("[WEB-CHECK] Erro de configuracao no edital_id=%s: %s", edital_id, exc)
+        base["erro"] = str(exc)
+        base["erro_categoria"] = "configuracao"
+        base["configuracao_web_check_utilizada"] = exc.profile or base.get("configuracao_web_check_utilizada")
+        base["resumo_web"] = "Falha controlada na validacao web."
+        base["marcar_para_revisao"] = True
+        base["confianca_web"] = 0.0
+        base["confianca_validacao"] = 0.0
+        base["executado"] = False
+        base["executado_em"] = _now_iso()
+        return base
+    except WebCheckHTTPError as exc:
+        logger.error("[WEB-CHECK] Erro HTTP no edital_id=%s: %s", edital_id, exc)
+        base["erro"] = str(exc)
+        base["erro_categoria"] = "http"
+        base["configuracao_web_check_utilizada"] = exc.profile or base.get("configuracao_web_check_utilizada")
+        base["resumo_web"] = "Falha controlada na validacao web."
+        base["marcar_para_revisao"] = True
+        base["confianca_web"] = 0.0
+        base["confianca_validacao"] = 0.0
+        base["executado"] = False
+        base["executado_em"] = _now_iso()
+        return base
+    except WebCheckToolError as exc:
+        logger.error("[WEB-CHECK] Erro de tool web_search no edital_id=%s: %s", edital_id, exc)
+        base["erro"] = str(exc)
+        base["erro_categoria"] = "tool_web_search"
+        base["configuracao_web_check_utilizada"] = exc.profile or base.get("configuracao_web_check_utilizada")
+        base["resumo_web"] = "Falha controlada na validacao web."
+        base["marcar_para_revisao"] = True
+        base["confianca_web"] = 0.0
+        base["confianca_validacao"] = 0.0
+        base["executado"] = False
+        base["executado_em"] = _now_iso()
+        return base
+    except WebCheckParsingError as exc:
+        logger.error("[WEB-CHECK] Erro de parsing no edital_id=%s: %s", edital_id, exc)
+        base["erro"] = str(exc)
+        base["erro_categoria"] = "parsing"
+        base["configuracao_web_check_utilizada"] = exc.profile or base.get("configuracao_web_check_utilizada")
+        base["resumo_web"] = "Falha controlada na validacao web."
+        base["marcar_para_revisao"] = True
+        base["confianca_web"] = 0.0
+        base["confianca_validacao"] = 0.0
+        base["executado"] = False
+        base["executado_em"] = _now_iso()
+        return base
     except Exception as exc:
         logger.error("[WEB-CHECK] Falha no web check do edital_id=%s: %s", edital_id, exc)
         base["erro"] = str(exc)
+        base["erro_categoria"] = "desconhecido"
         base["resumo_web"] = "Falha controlada na validacao web."
         base["marcar_para_revisao"] = True
         base["confianca_web"] = 0.0

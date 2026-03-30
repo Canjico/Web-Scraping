@@ -1,5 +1,6 @@
 import argparse
 import datetime
+import json
 import os
 import re
 import subprocess
@@ -78,6 +79,17 @@ def _build_exec_command(arquivo: str) -> list[str]:
 
 def _extract_error_reason(stdout: str, stderr: str, returncode: int) -> str:
     if returncode != 0:
+        detalhe = ""
+        for chunk in (stderr or "", stdout or ""):
+            for line in reversed(chunk.splitlines()):
+                clean = (line or "").strip()
+                if clean:
+                    detalhe = clean
+                    break
+            if detalhe:
+                break
+        if detalhe:
+            return f"Processo encerrou com codigo {returncode} | detalhe: {detalhe[:220]}"
         return f"Processo encerrou com codigo {returncode}"
     return ""
 
@@ -126,14 +138,175 @@ def _criar_log_inicio_ciclo(nome_ciclo: str, instante_inicio: datetime.datetime 
         return None
 
 
+def _append_log_txt(caminho_log: str | None, texto: str) -> None:
+    if not caminho_log:
+        return
+    try:
+        with open(caminho_log, "a", encoding="utf-8") as fp:
+            fp.write(texto)
+            if not texto.endswith("\n"):
+                fp.write("\n")
+    except Exception as exc:
+        utils.print_error(f"Falha ao escrever no log de ciclo: {exc}")
+
+
+def _to_bool_or_none(value) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    token = str(value or "").strip().lower()
+    if token in {"true", "1", "sim", "yes", "aprovado"}:
+        return True
+    if token in {"false", "0", "nao", "não", "no", "reprovado"}:
+        return False
+    return None
+
+
+def _parse_json_data(raw_json) -> dict:
+    if isinstance(raw_json, dict):
+        return raw_json
+    if isinstance(raw_json, str) and raw_json.strip():
+        try:
+            parsed = json.loads(raw_json)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            return {}
+    return {}
+
+
+def _resumo_aprovacao_editais(editais: list[dict]) -> dict:
+    aprovados = 0
+    reprovados = 0
+    incertos = 0
+    divergencias_web_check = 0
+    amostra: list[dict] = []
+
+    for item in editais or []:
+        data = _parse_json_data(item.get("json_data"))
+        aprovado_flag = _to_bool_or_none(data.get("aprovado"))
+        if aprovado_flag is True:
+            aprovados += 1
+            status_ia = "aprovado"
+        elif aprovado_flag is False:
+            reprovados += 1
+            status_ia = "reprovado"
+        else:
+            incertos += 1
+            status_ia = "incerto"
+
+        web_check = data.get("web_check") if isinstance(data.get("web_check"), dict) else {}
+        if web_check.get("divergencia_status") is True:
+            divergencias_web_check += 1
+
+        amostra.append(
+            {
+                "id": item.get("id"),
+                "titulo": str(item.get("titulo") or "").strip(),
+                "ia": status_ia,
+                "motivo_ia": str(data.get("motivo_aprovacao") or "").strip(),
+                "status_final": str(web_check.get("status_final") or "").strip(),
+                "fonte_status_final": str(web_check.get("fonte_decisao_final") or "").strip(),
+                "divergencia_web_check": bool(web_check.get("divergencia_status")),
+            }
+        )
+
+    return {
+        "aprovados": aprovados,
+        "reprovados": reprovados,
+        "incertos": incertos,
+        "divergencias_web_check": divergencias_web_check,
+        "amostra": amostra,
+    }
+
+
+def _escrever_log_script(
+    caminho_log: str | None,
+    *,
+    indice: int,
+    arquivo: str,
+    fonte_label: str,
+    inicio_script,
+    fim_script,
+    status_execucao: str,
+    motivo_falha: str | None,
+    return_code: int | None,
+    novos_script: list[dict],
+    stdout_tail: str,
+    stderr_tail: str,
+) -> None:
+    resumo = _resumo_aprovacao_editais(novos_script or [])
+    _append_log_txt(caminho_log, "\n" + "-" * 80)
+    _append_log_txt(caminho_log, f"SCRIPT {indice}/{TOTAL_SCRIPTS}: {arquivo}")
+    _append_log_txt(caminho_log, f"fonte: {fonte_label}")
+    _append_log_txt(caminho_log, f"inicio: {inicio_script}")
+    _append_log_txt(caminho_log, f"fim: {fim_script}")
+    _append_log_txt(caminho_log, f"status_execucao: {status_execucao}")
+    _append_log_txt(caminho_log, f"return_code: {return_code}")
+    _append_log_txt(caminho_log, f"qtd_editais_novos: {len(novos_script or [])}")
+    _append_log_txt(caminho_log, f"aprovados_ia: {resumo['aprovados']}")
+    _append_log_txt(caminho_log, f"reprovados_ia: {resumo['reprovados']}")
+    _append_log_txt(caminho_log, f"incertos_ia: {resumo['incertos']}")
+    _append_log_txt(caminho_log, f"divergencias_web_check: {resumo['divergencias_web_check']}")
+    _append_log_txt(caminho_log, f"causa_erro: {motivo_falha or '-'}")
+
+    if resumo["amostra"]:
+        _append_log_txt(caminho_log, "editais_novos:")
+        for edital in resumo["amostra"][:50]:
+            _append_log_txt(
+                caminho_log,
+                (
+                    f"- id={edital.get('id')} | ia={edital.get('ia')} | "
+                    f"divergencia_web_check={edital.get('divergencia_web_check')} | "
+                    f"status_final={edital.get('status_final') or '-'} | "
+                    f"fonte_final={edital.get('fonte_status_final') or '-'} | "
+                    f"titulo={edital.get('titulo')}"
+                ),
+            )
+            if edital.get("motivo_ia"):
+                _append_log_txt(caminho_log, f"  motivo_ia: {edital.get('motivo_ia')}")
+
+    if stdout_tail:
+        _append_log_txt(caminho_log, "\nstdout_tail:")
+        _append_log_txt(caminho_log, stdout_tail[-1200:])
+    if stderr_tail:
+        _append_log_txt(caminho_log, "\nstderr_tail:")
+        _append_log_txt(caminho_log, stderr_tail[-1200:])
+
+
+def _escrever_log_fim_ciclo(
+    caminho_log: str | None,
+    *,
+    nome_ciclo: str,
+    fontes_ok: int,
+    fontes_erro: int,
+    total_novos: int,
+    status_geral: str,
+) -> None:
+    fim = _now().strftime("%Y-%m-%d %H:%M:%S")
+    _append_log_txt(caminho_log, "\n" + "=" * 60)
+    _append_log_txt(caminho_log, "RESUMO FINAL DO CICLO")
+    _append_log_txt(caminho_log, "=" * 60)
+    _append_log_txt(caminho_log, f"ciclo: {nome_ciclo}")
+    _append_log_txt(caminho_log, f"finalizado_em: {fim}")
+    _append_log_txt(caminho_log, f"status_geral: {status_geral}")
+    _append_log_txt(caminho_log, f"fontes_ok: {fontes_ok}")
+    _append_log_txt(caminho_log, f"fontes_erro: {fontes_erro}")
+    _append_log_txt(caminho_log, f"fontes_total_implementadas: {TOTAL_SCRIPTS}")
+    _append_log_txt(caminho_log, f"fontes_total_config: {FONTES_TOTAL_DIARIAS}")
+    _append_log_txt(caminho_log, f"total_editais_novos_ciclo: {total_novos}")
+
+
 def executar_ciclo(nome_ciclo: str = "Manual") -> None:
     inicio_local = _now()
     caminho_log = _criar_log_inicio_ciclo(nome_ciclo=nome_ciclo, instante_inicio=inicio_local)
     if caminho_log:
         utils.print_info(f"[LOG] Arquivo de inicio criado: {caminho_log}")
+        _append_log_txt(caminho_log, "\nEXECUCAO INICIADA")
+        _append_log_txt(caminho_log, f"inicio_local: {inicio_local.strftime('%Y-%m-%d %H:%M:%S')}")
 
     if TOTAL_SCRIPTS == 0:
         utils.print_error("Nenhum scraper encontrado para executar (SCRIPTS vazio).")
+        _append_log_txt(caminho_log, "ERRO: Nenhum scraper encontrado para executar (SCRIPTS vazio).")
         return
 
     data_inicio = utils.obter_data_sql()
@@ -216,6 +389,21 @@ def executar_ciclo(nome_ciclo: str = "Manual") -> None:
                 "fontes_erro_execucao": fontes_erro,
             }
 
+            _escrever_log_script(
+                caminho_log,
+                indice=i,
+                arquivo=arquivo,
+                fonte_label=fonte_label,
+                inicio_script=inicio_script,
+                fim_script=fim_script,
+                status_execucao=status_execucao,
+                motivo_falha=motivo_falha or None,
+                return_code=run_result.returncode,
+                novos_script=novos_script,
+                stdout_tail=run_result.stdout or "",
+                stderr_tail=run_result.stderr or "",
+            )
+
             # Erro de auditoria nao deve invalidar scraping bem-sucedido.
             utils.registrar_log_auditoria(
                 nome_ciclo,
@@ -241,7 +429,23 @@ def executar_ciclo(nome_ciclo: str = "Manual") -> None:
         except Exception as e:
             fontes_erro += 1
             motivo_falha = f"Falha ao executar {arquivo}: {e}"
+            fim_script = utils.obter_data_sql()
             utils.print_error(motivo_falha)
+
+            _escrever_log_script(
+                caminho_log,
+                indice=i,
+                arquivo=arquivo,
+                fonte_label=fonte_label,
+                inicio_script=inicio_script,
+                fim_script=fim_script,
+                status_execucao="erro",
+                motivo_falha=motivo_falha,
+                return_code=None,
+                novos_script=[],
+                stdout_tail="",
+                stderr_tail="",
+            )
 
             utils.registrar_log_auditoria(
                 nome_ciclo,
@@ -253,7 +457,7 @@ def executar_ciclo(nome_ciclo: str = "Manual") -> None:
                     "status_execucao": "erro",
                     "motivo_falha": motivo_falha,
                     "tempo_inicio": str(inicio_script),
-                    "tempo_fim": str(utils.obter_data_sql()),
+                    "tempo_fim": str(fim_script),
                     "fontes_total_implementadas": TOTAL_SCRIPTS,
                     "fontes_total_config": FONTES_TOTAL_DIARIAS,
                     "fontes_ok_execucao": fontes_ok,
@@ -271,10 +475,11 @@ def executar_ciclo(nome_ciclo: str = "Manual") -> None:
 
     utils.print_section("SCRAPING FINALIZADO. PROCESSANDO AUDITORIA...")
 
+    total_novos = 0
+    status_geral = "erro" if fontes_erro > 0 else "sucesso"
     try:
         editais_novos = utils.obter_editais_criados_desde(data_inicio)
         total_novos = len(editais_novos)
-        status_geral = "erro" if fontes_erro > 0 else "sucesso"
         msg = "Ciclo concluido com fontes em erro." if fontes_erro > 0 else "Ciclo concluido sem erro de fontes."
 
         utils.registrar_log_auditoria(
@@ -296,6 +501,16 @@ def executar_ciclo(nome_ciclo: str = "Manual") -> None:
         )
     except Exception as e:
         utils.print_error(f"Erro ao registrar auditoria: {e}")
+        _append_log_txt(caminho_log, f"ERRO_AUDITORIA: {e}")
+
+    _escrever_log_fim_ciclo(
+        caminho_log,
+        nome_ciclo=nome_ciclo,
+        fontes_ok=fontes_ok,
+        fontes_erro=fontes_erro,
+        total_novos=total_novos,
+        status_geral=status_geral,
+    )
 
     utils.print_success(
         f"CICLO {nome_ciclo} CONCLUIDO | fontes sem erro: {fontes_ok}/{FONTES_TOTAL_DIARIAS} | fontes com erro: {fontes_erro}"
