@@ -29,6 +29,8 @@ except Exception:  # pragma: no cover
 #   python Edital.py --once
 
 PROJETO_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.dirname(PROJETO_DIR)
+LOG_DIR = os.path.join(ROOT_DIR, "Log")
 
 IGNORAR = {
     "__init__.py",
@@ -80,7 +82,56 @@ def _extract_error_reason(stdout: str, stderr: str, returncode: int) -> str:
     return ""
 
 
+def _sanitize_filename_part(value: str) -> str:
+    clean = re.sub(r"[^A-Za-z0-9_-]+", "_", str(value or "").strip())
+    clean = clean.strip("_")
+    return clean or "ciclo"
+
+
+def _tipo_disparo(nome_ciclo: str) -> str:
+    ciclo = str(nome_ciclo or "").strip().lower()
+    return "agendado" if re.fullmatch(r"\d{2}h", ciclo) else "manual"
+
+
+def _criar_log_inicio_ciclo(nome_ciclo: str, instante_inicio: datetime.datetime | None = None) -> str | None:
+    inicio = instante_inicio or _now()
+    ciclo_key = _sanitize_filename_part(nome_ciclo)
+    timestamp = inicio.strftime("%Y%m%d_%H%M%S")
+    tipo_disparo = _tipo_disparo(nome_ciclo)
+
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        base_name = f"{timestamp}_{ciclo_key}"
+        filename = f"{base_name}.txt"
+        path = os.path.join(LOG_DIR, filename)
+
+        seq = 1
+        while os.path.exists(path):
+            filename = f"{base_name}_{seq:02d}.txt"
+            path = os.path.join(LOG_DIR, filename)
+            seq += 1
+
+        with open(path, "w", encoding="utf-8") as fp:
+            fp.write("LOG DE INICIO DO CICLO\n")
+            fp.write("=" * 60 + "\n")
+            fp.write(f"ciclo: {nome_ciclo}\n")
+            fp.write(f"tipo_disparo: {tipo_disparo}\n")
+            fp.write(f"iniciado_em: {inicio.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            fp.write(f"timezone: {TZ_NAME if _TZ else 'local'}\n")
+            fp.write(f"scripts_detectados: {TOTAL_SCRIPTS}\n")
+            fp.write(f"fontes_total_config: {FONTES_TOTAL_DIARIAS}\n")
+        return path
+    except Exception as exc:
+        utils.print_error(f"Falha ao criar log de inicio do ciclo: {exc}")
+        return None
+
+
 def executar_ciclo(nome_ciclo: str = "Manual") -> None:
+    inicio_local = _now()
+    caminho_log = _criar_log_inicio_ciclo(nome_ciclo=nome_ciclo, instante_inicio=inicio_local)
+    if caminho_log:
+        utils.print_info(f"[LOG] Arquivo de inicio criado: {caminho_log}")
+
     if TOTAL_SCRIPTS == 0:
         utils.print_error("Nenhum scraper encontrado para executar (SCRIPTS vazio).")
         return
@@ -341,4 +392,3 @@ if __name__ == "__main__":
         raise SystemExit(main())
     except KeyboardInterrupt:
         utils.print_info("Encerrando agendador...")
-
