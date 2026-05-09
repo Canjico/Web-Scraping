@@ -4,6 +4,7 @@ import datetime as _dt
 import hashlib
 import html
 import json
+import mimetypes
 import os
 import re
 import time
@@ -11,7 +12,7 @@ from collections import deque
 from dataclasses import asdict, dataclass, field
 from html.parser import HTMLParser
 from typing import Any, Iterable
-from urllib.parse import urldefrag, urljoin, urlparse, urlunparse, parse_qsl, urlencode
+from urllib.parse import urldefrag, urljoin, urlparse, urlunparse, parse_qsl, urlencode, unquote
 
 try:
     from . import utils  # type: ignore
@@ -71,6 +72,30 @@ except Exception:  # pragma: no cover
 DOCUMENT_EXTENSIONS = {
     ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv", ".zip", ".rar", ".7z", ".odt", ".ods"
 }
+
+DOCUMENT_CONTENT_TYPES = {
+    "application/pdf",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "text/csv",
+    "application/zip",
+    "application/x-zip-compressed",
+    "application/vnd.oasis.opendocument.text",
+    "application/vnd.oasis.opendocument.spreadsheet",
+}
+
+DOCUMENT_URL_HINTS = (
+    "download", "baixar", "arquivo", "arquivos", "anexo", "anexos", "documento", "documentos",
+    "file", "files", "attachment", "attachments", "wp-content/uploads", "storage", "media",
+    "conteudo", "visualizar", "viewfile", "getfile", "blob", "api/document", "api/arquivo",
+)
+
+LINK_ATTRS = (
+    "href", "src", "action", "data-href", "data-url", "data-link", "data-src", "data-file",
+    "data-download", "data-arquivo", "data-documento", "data-pdf", "formaction",
+)
 
 POSITIVE_TERMS = {
     "edital": 4.0,
@@ -239,12 +264,32 @@ class _HTMLAnalyzer(HTMLParser):
             self._ignore_depth += 1
         if tag == "a" and attrs_dict.get("href"):
             self._current_anchor = {"href": attrs_dict.get("href", ""), "title": attrs_dict.get("title", ""), "text": ""}
-        elif tag in {"iframe", "frame"} and attrs_dict.get("src"):
-            self.links.append({"href": attrs_dict.get("src", ""), "title": attrs_dict.get("title", "iframe"), "text": "iframe"})
+        elif tag in {"iframe", "frame", "embed", "object", "source"} and attrs_dict.get("src"):
+            self.links.append({"href": attrs_dict.get("src", ""), "title": attrs_dict.get("title", tag), "text": tag})
+        elif tag == "form" and attrs_dict.get("action"):
+            self.links.append({"href": attrs_dict.get("action", ""), "title": "form action", "text": attrs_dict.get("aria-label", "form action")})
         elif tag == "link" and attrs_dict.get("href"):
             rel = attrs_dict.get("rel", "")
-            if "alternate" in rel or "canonical" in rel:
+            if "alternate" in rel or "canonical" in rel or "sitemap" in rel:
                 self.links.append({"href": attrs_dict.get("href", ""), "title": rel, "text": rel})
+        elif tag == "meta":
+            equiv = attrs_dict.get("http-equiv", "").lower()
+            content = attrs_dict.get("content", "")
+            if equiv == "refresh" and "url=" in content.lower():
+                target = re.split(r"url\s*=", content, flags=re.I, maxsplit=1)[-1].strip(" '\"")
+                if target:
+                    self.links.append({"href": target, "title": "meta refresh", "text": "meta refresh"})
+
+        # Muitos portais escondem downloads em data-url/data-file/onclick em vez de <a href>.
+        if tag != "a":
+            for attr in LINK_ATTRS:
+                value = attrs_dict.get(attr, "")
+                if value and not value.startswith(("#", "javascript:")):
+                    self.links.append({"href": value, "title": attr, "text": attrs_dict.get("aria-label") or attrs_dict.get("title") or tag})
+        onclick = attrs_dict.get("onclick", "")
+        if onclick:
+            for target in re.findall(r"(?:location(?:\.href)?|window\.open)\s*\(?\s*['\"]([^'\"]+)['\"]", onclick, flags=re.I):
+                self.links.append({"href": target, "title": "onclick", "text": attrs_dict.get("title") or attrs_dict.get("aria-label") or "onclick"})
 
     def handle_endtag(self, tag: str):
         tag = tag.lower()
@@ -283,6 +328,14 @@ class SmartCrawler:
         self.sleep_seconds = float(os.getenv("SMART_CRAWLER_SLEEP", "0.15"))
         self.timeout = int(os.getenv("SMART_CRAWLER_TIMEOUT", "35"))
         self.allow_external_documents = os.getenv("SMART_ALLOW_EXTERNAL_DOCUMENTS", "1") == "1"
+        self.probe_documents = os.getenv("SMART_PROBE_DOCUMENTS", "1") == "1"
+        self.max_head_probes = int(os.getenv("SMART_MAX_HEAD_PROBES", "80"))
+        self._head_probes = 0
+        self._runtime_warnings: set[str] = set()
+
+    def _warn_once(self, message: str) -> None:
+        if message:
+            self._runtime_warnings.add(message)
 
     def crawl(self) -> CrawlReport:
         now = utc_now_iso()
@@ -302,16 +355,34 @@ class SmartCrawler:
             seen.add(normalized)
             report.pages_seen += 1
 
-            if is_document_url(normalized):
-                link = self.classify_link(LinkInfo(url=normalized, source_url=parent, depth=depth, is_document=True))
-                if self._is_allowed_document(link.url):
-                    docs_by_url[link.url] = link
-                continue
+            if is_document_url(normalized) or looks_like_document_url(normalized):
+                ctype = ""
+                confirmed_doc = is_document_url(normalized)
+                if not confirmed_doc:
+                    ctype, confirmed_doc = self._probe_document_metadata(normalized)
+                if confirmed_doc:
+                    link = self.classify_link(LinkInfo(url=normalized, source_url=parent, depth=depth, content_type=ctype, is_document=True))
+                    if self._is_allowed_document(link.url):
+                        docs_by_url[link.url] = link
+                    continue
 
             if not self._is_allowed_html(normalized):
                 continue
 
             snapshot = self.fetch_page(normalized)
+            if snapshot.error == "DOCUMENT_RESPONSE":
+                link = self.classify_link(LinkInfo(
+                    url=snapshot.final_url or normalized,
+                    text=snapshot.title,
+                    title=snapshot.title,
+                    source_url=parent,
+                    depth=depth,
+                    content_type=snapshot.content_type,
+                    is_document=True,
+                ))
+                if self._is_allowed_document(link.url):
+                    docs_by_url[link.url] = link
+                continue
             if snapshot.error:
                 report.pages_failed += 1
                 report.warnings.append(f"Falha ao buscar {normalized}: {snapshot.error}")
@@ -401,8 +472,10 @@ class SmartCrawler:
 
         report.candidates = sorted(candidate_pages.values(), key=lambda c: (c.confidence, c.score), reverse=True)
         report.finished_at = utc_now_iso()
+        if self._runtime_warnings:
+            report.warnings.extend(sorted(self._runtime_warnings))
         if report.pages_fetched == 0:
-            report.warnings.append("Nenhuma pagina HTML foi capturada; verifique bloqueio, JS pesado, SSL ou URL inicial.")
+            report.warnings.append("Nenhuma pagina HTML foi capturada; verifique bloqueio, JS pesado, SSL, URL inicial ou site 100% renderizado por JavaScript.")
         return report
 
     def fetch_page(self, url: str) -> PageSnapshot:
@@ -412,15 +485,35 @@ class SmartCrawler:
             final_url = normalize_url(resp.url or url)
             if resp.status_code >= 400:
                 return PageSnapshot(url=url, status_code=resp.status_code, content_type=ctype, final_url=final_url, error=f"HTTP {resp.status_code}")
+            if is_document_content_type(ctype):
+                return PageSnapshot(
+                    url=url,
+                    status_code=resp.status_code,
+                    content_type=ctype,
+                    final_url=final_url,
+                    title=file_name_from_url(final_url or url),
+                    headings=[],
+                    text="",
+                    links=[],
+                    html_hash="",
+                    fetched_at=utc_now_iso(),
+                    error="DOCUMENT_RESPONSE",
+                )
+
             raw = resp.text or ""
-            if os.getenv("SMART_USE_PLAYWRIGHT", "1") == "1" and looks_js_heavy(raw):
+            use_playwright = os.getenv("SMART_USE_PLAYWRIGHT", "1") == "1"
+            if use_playwright and looks_js_heavy(raw):
+                if not is_playwright_available():
+                    self._warn_once("Site parece depender de JavaScript, mas Playwright nao esta instalado/disponivel.")
                 rendered = render_html_with_playwright(final_url or url, timeout_ms=int(os.getenv("SMART_PLAYWRIGHT_TIMEOUT_MS", "12000")))
                 if rendered and len(rendered) > len(raw):
                     raw = rendered
 
             parser = _HTMLAnalyzer(final_url or url)
             parser.feed(raw)
-            if os.getenv("SMART_USE_PLAYWRIGHT", "1") == "1" and len(parser.links) < 3 and len(compact_text(" ".join(parser.text_parts))) < 800:
+            if use_playwright and len(parser.links) < 3 and len(compact_text(" ".join(parser.text_parts))) < 800:
+                if not is_playwright_available():
+                    self._warn_once("Poucos links/texto detectados e Playwright nao esta instalado/disponivel para renderizar a pagina.")
                 rendered = render_html_with_playwright(final_url or url, timeout_ms=int(os.getenv("SMART_PLAYWRIGHT_TIMEOUT_MS", "12000")))
                 if rendered and rendered != raw:
                     raw = rendered
@@ -447,16 +540,15 @@ class SmartCrawler:
                     content_type="",
                     is_document=is_document_url(target),
                 ))
-            # Fallback: captura URLs literais dentro de JSON/script/atributos que o parser nao tratou.
-            for embedded in re.findall(r"https?://[^\s\"'<>\)\]]+", raw):
-                embedded = normalize_url(embedded)
+            # Fallback: captura URLs literais e caminhos relativos dentro de JSON/script/atributos que o parser nao tratou.
+            for embedded in extract_embedded_urls(raw, final_url or url):
                 if embedded:
                     links.append(LinkInfo(
                         url=embedded,
                         text="url_embutida_html",
                         title="url_embutida_html",
                         source_url=final_url or url,
-                        is_document=is_document_url(embedded),
+                        is_document=is_document_url(embedded) or looks_like_document_url(embedded),
                     ))
 
             return PageSnapshot(
@@ -482,6 +574,11 @@ class SmartCrawler:
         link.url = normalize_url(link.url)
         link.is_document = link.is_document or is_document_url(link.url)
         corpus = f"{link.url} {link.text} {link.title}"
+        if not link.is_document and looks_like_document_url(link.url, corpus):
+            ctype, confirmed = self._probe_document_metadata(link.url)
+            if confirmed:
+                link.is_document = True
+                link.content_type = ctype or link.content_type
         scored = score_corpus(corpus, is_document=link.is_document, source_keywords=self.source.keywords)
         link.score = scored["score"]
         link.kind = "documento_edital" if link.is_document and scored["confidence"] >= 0.52 else scored["kind"]
@@ -506,20 +603,42 @@ class SmartCrawler:
         if not self.source.base_url:
             return []
         base = self.source.base_url.rstrip("/")
-        sitemap_candidates = [f"{base}/sitemap.xml", f"{base}/sitemap_index.xml"]
+        queue: deque[str] = deque([f"{base}/sitemap.xml", f"{base}/sitemap_index.xml", f"{base}/robots.txt"])
+        seen_sitemaps: set[str] = set()
         out: list[str] = []
         max_items = int(os.getenv("SMART_SITEMAP_MAX_URLS", "80"))
-        for sitemap_url in sitemap_candidates:
+        max_sitemaps = int(os.getenv("SMART_SITEMAP_MAX_FILES", "12"))
+
+        while queue and len(seen_sitemaps) < max_sitemaps and len(out) < max_items:
+            sitemap_url = normalize_url(queue.popleft())
+            if not sitemap_url or sitemap_url in seen_sitemaps:
+                continue
+            seen_sitemaps.add(sitemap_url)
             try:
                 resp = self.session.get(sitemap_url, timeout=min(self.timeout, 20), verify=not utils.deve_ignorar_ssl(sitemap_url, self.source.name))
                 if resp.status_code >= 400 or not resp.text:
                     continue
-                for loc in re.findall(r"<loc>\s*([^<]+?)\s*</loc>", resp.text, flags=re.I):
-                    loc = normalize_url(html.unescape(loc))
-                    if not loc or not self._is_allowed_html(loc):
+                body = resp.text
+
+                if sitemap_url.endswith("/robots.txt"):
+                    for loc in re.findall(r"^\s*Sitemap:\s*(\S+)", body, flags=re.I | re.M):
+                        loc = normalize_url(html.unescape(loc))
+                        if loc and loc not in seen_sitemaps:
+                            queue.append(loc)
+                    continue
+
+                for loc_raw in re.findall(r"<loc>\s*([^<]+?)\s*</loc>", body, flags=re.I):
+                    loc = normalize_url(html.unescape(loc_raw))
+                    if not loc:
+                        continue
+                    if loc.lower().endswith(".xml") and len(seen_sitemaps) + len(queue) < max_sitemaps:
+                        queue.append(loc)
+                        continue
+                    if not self._is_allowed_html(loc) and not is_document_url(loc):
                         continue
                     scored = score_corpus(loc, is_document=is_document_url(loc), source_keywords=self.source.keywords)
-                    if scored["confidence"] >= 0.38 or any(x in normalize_for_match(loc) for x in ["edital", "chamada", "aberto", "inscricao", "inscricoes"]):
+                    norm_loc = normalize_for_match(loc)
+                    if scored["confidence"] >= 0.38 or any(x in norm_loc for x in ["edital", "chamada", "aberto", "inscricao", "inscricoes", "subvencao", "fomento"]):
                         out.append(loc)
                         if len(out) >= max_items:
                             return unique_url_list(out)
@@ -548,6 +667,46 @@ class SmartCrawler:
         # Documentos podem estar em storage/CDN oficial; evita redes sociais e encurtadores.
         blocked = {"facebook.com", "instagram.com", "youtube.com", "youtu.be", "twitter.com", "x.com", "linkedin.com", "wa.me"}
         return not any(host == d or host.endswith("." + d) for d in blocked)
+
+    def _probe_document_metadata(self, url: str) -> tuple[str, bool]:
+        """Confirma documentos sem extensao usando HEAD/Content-Type.
+
+        Muitos portais usam /download?id=123 ou /arquivo/visualizar/999.
+        Sem esse probe o crawler perde anexos importantes. O limite evita virar metralhadora de HEAD.
+        """
+        if not self.probe_documents or self._head_probes >= self.max_head_probes or not url:
+            return "", False
+        if not self._is_allowed_document(url) and not self._is_allowed_html(url):
+            return "", False
+        self._head_probes += 1
+        try:
+            resp = self.session.head(
+                url,
+                timeout=min(self.timeout, 18),
+                allow_redirects=True,
+                verify=not utils.deve_ignorar_ssl(url, self.source.name),
+            )
+            # Alguns sites bloqueiam HEAD; um GET pequeno ainda permite ler cabecalhos sem baixar tudo.
+            if resp.status_code in {403, 405} or not resp.headers:
+                resp = self.session.get(
+                    url,
+                    timeout=min(self.timeout, 18),
+                    allow_redirects=True,
+                    stream=True,
+                    verify=not utils.deve_ignorar_ssl(url, self.source.name),
+                )
+            ctype = resp.headers.get("content-type", "")
+            dispo = resp.headers.get("content-disposition", "")
+            final_url = normalize_url(getattr(resp, "url", "") or url)
+            is_doc = is_document_content_type(ctype) or is_attachment_disposition(dispo) or is_document_url(final_url)
+            try:
+                resp.close()
+            except Exception:
+                pass
+            return ctype, bool(is_doc)
+        except Exception as exc:
+            utils.logger.info("[SMART] Probe HEAD falhou em %s: %s", url, exc)
+            return "", False
 
 
 def score_corpus(corpus: str, *, is_document: bool, source_keywords: Iterable[str] = ()) -> dict[str, Any]:
@@ -583,9 +742,19 @@ def score_corpus(corpus: str, *, is_document: bool, source_keywords: Iterable[st
                 reasons.append(f"termo negativo: {term}")
 
     dates = extract_dates(raw)
+    deadline_dates = extract_deadline_dates(raw)
+    future_deadlines = [d for d in deadline_dates if d >= today_br()]
     future_dates = [d for d in dates if d >= today_br()]
-    if future_dates:
-        score += 1.7
+    if future_deadlines:
+        score += 2.5
+        reasons.append("prazo/submissao futura detectada")
+        open_score += 1.4
+    elif deadline_dates and max(deadline_dates) < today_br():
+        closed_score += 2.0
+        score -= 1.5
+        reasons.append("prazo/submissao vencida detectada")
+    elif future_dates:
+        score += 1.0
         reasons.append("data futura detectada")
     elif dates and closed_score:
         score -= 0.7
@@ -703,12 +872,28 @@ def persist_report(report: CrawlReport, *, use_ia: bool = True, max_candidates: 
 
 def build_rule_based_payload(cand: CandidateEdital, report: CrawlReport) -> dict[str, Any]:
     dates = []
+    deadline_dates = []
     for source in [cand.html_text, cand.title, cand.url] + [f"{d.text} {d.url}" for d in cand.documents]:
         dates.extend(extract_dates(source or ""))
-    final_date = max(dates).isoformat() if dates else None
-    aberto = cand.status_hint != "encerrado"
-    if dates and max(dates) < today_br():
+        deadline_dates.extend(extract_deadline_dates(source or ""))
+    unique_dates = sorted(set(dates))
+    unique_deadlines = sorted(set(deadline_dates))
+    final_date_obj = max(unique_deadlines or unique_dates) if (unique_deadlines or unique_dates) else None
+    final_date = final_date_obj.isoformat() if final_date_obj else None
+
+    aberto = cand.status_hint == "aberto"
+    if unique_deadlines:
+        aberto = max(unique_deadlines) >= today_br()
+    elif unique_dates and max(unique_dates) < today_br():
         aberto = False
+    elif cand.status_hint == "unknown":
+        # Compatibilidade: sem prazo claro, só aprova automaticamente se a página for muito forte.
+        aberto = cand.confidence >= 0.82
+
+    status_detectado = "aberto" if aberto else "encerrado_ou_incerto"
+    if aberto and not unique_deadlines and cand.status_hint == "unknown":
+        status_detectado = "aberto_provavel_sem_prazo_claro"
+
     return {
         "aprovado": bool(aberto and cand.confidence >= 0.66),
         "titulo": cand.title,
@@ -716,7 +901,8 @@ def build_rule_based_payload(cand: CandidateEdital, report: CrawlReport) -> dict
         "link_original": cand.url,
         "descricao": compact_text(cand.html_text[:800]) if cand.html_text else "Capturado automaticamente pelo Smart Crawler.",
         "data_final_submissao": final_date,
-        "status_detectado": "aberto" if aberto else "encerrado_ou_incerto",
+        "data_final_submissao_metodo": "prazo_contextual" if unique_deadlines else ("maior_data_detectada" if unique_dates else "nao_detectado"),
+        "status_detectado": status_detectado,
         "motivo_aprovacao": "; ".join(cand.reasons[:6]),
         "confianca_captura": cand.confidence,
         "captura_automatica": True,
@@ -726,7 +912,7 @@ def build_rule_based_payload(cand: CandidateEdital, report: CrawlReport) -> dict
 
 def build_smart_metadata(cand: CandidateEdital, report: CrawlReport) -> dict[str, Any]:
     return {
-        "versao": "2026-05-06",
+        "versao": "2026-05-07-hardening",
         "fonte": report.source,
         "url": cand.url,
         "kind": cand.kind,
@@ -814,6 +1000,14 @@ def looks_js_heavy(raw_html: str) -> bool:
     return len(compact_text(visible)) < 300 and lowered.count("<script") >= 3
 
 
+def is_playwright_available() -> bool:
+    try:
+        import importlib.util
+        return importlib.util.find_spec("playwright.sync_api") is not None or importlib.util.find_spec("playwright") is not None
+    except Exception:
+        return False
+
+
 def render_html_with_playwright(url: str, timeout_ms: int = 12000) -> str:
     try:
         from playwright.sync_api import sync_playwright  # type: ignore
@@ -869,7 +1063,8 @@ def normalize_url(url: str) -> str:
 
 
 def host_key(url: str) -> str:
-    host = urlparse(url).netloc.lower().strip()
+    parsed = urlparse(url)
+    host = (parsed.hostname or parsed.netloc or "").lower().strip()
     return host[4:] if host.startswith("www.") else host
 
 
@@ -878,11 +1073,72 @@ def file_ext(url: str) -> str:
 
 
 def file_name_from_url(url: str) -> str:
-    return os.path.basename(urlparse(url).path) or "documento"
+    parsed = urlparse(url)
+    name = os.path.basename(unquote(parsed.path or ""))
+    if name:
+        return name
+    for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+        if key.lower() in {"file", "filename", "arquivo", "documento", "nome"} and value:
+            return os.path.basename(unquote(value)) or "documento"
+    return "documento"
 
 
 def is_document_url(url: str) -> bool:
-    return file_ext(url) in DOCUMENT_EXTENSIONS
+    parsed = urlparse(url or "")
+    if file_ext(url) in DOCUMENT_EXTENSIONS:
+        return True
+    query = unquote(parsed.query or "").lower()
+    return any(ext in query for ext in DOCUMENT_EXTENSIONS)
+
+
+def is_document_content_type(content_type: str) -> bool:
+    ctype = (content_type or "").split(";", 1)[0].strip().lower()
+    if ctype in DOCUMENT_CONTENT_TYPES:
+        return True
+    guessed_ext = mimetypes.guess_extension(ctype or "") or ""
+    return guessed_ext.lower() in DOCUMENT_EXTENSIONS
+
+
+def is_attachment_disposition(content_disposition: str) -> bool:
+    dispo = (content_disposition or "").lower()
+    if "attachment" in dispo:
+        return True
+    return any(ext in dispo for ext in DOCUMENT_EXTENSIONS)
+
+
+def looks_like_document_url(url: str, context: str = "") -> bool:
+    raw = normalize_for_match(f"{url} {context}")
+    if is_document_url(url):
+        return True
+    if any(hint in raw for hint in DOCUMENT_URL_HINTS):
+        return True
+    # Botões/link texts como "PDF", "Baixar edital" ou "Anexo I" frequentemente apontam para rota sem extensao.
+    compact = compact_ascii(context)
+    return any(token in compact for token in {"pdf", "docx", "xlsx", "baixaredital", "downloadedital", "anexo", "documento"})
+
+
+def extract_embedded_urls(raw_html: str, base_url: str) -> list[str]:
+    out: list[str] = []
+    raw = raw_html or ""
+
+    for embedded in re.findall(r"https?://[^\s\"'<>\)\]]+", raw):
+        normalized = normalize_url(embedded.rstrip(".,;"))
+        if normalized:
+            out.append(normalized)
+
+    # URLs relativas em JSON/atributos: "/download?id=123", "../arquivos/edital.pdf" etc.
+    rel_pattern = re.compile(
+        r"[\"']((?:\.{0,2}/|/)[^\"'<>\s]{3,240}(?:"
+        r"\.pdf|\.docx?|\.xlsx?|\.csv|\.zip|download|baixar|arquivo|anexo|documento|edital"
+        r")[^\"'<>\s]*)[\"']",
+        flags=re.I,
+    )
+    for match in rel_pattern.finditer(raw):
+        normalized = normalize_url(urljoin(base_url, html.unescape(match.group(1))))
+        if normalized:
+            out.append(normalized)
+
+    return unique_url_list(out)
 
 
 def unique_links(links: Iterable[LinkInfo]) -> list[LinkInfo]:
@@ -927,16 +1183,60 @@ def extract_dates(value: str) -> list[_dt.date]:
     dates: list[_dt.date] = []
     for pattern in DATE_PATTERNS:
         for match in pattern.finditer(value or ""):
-            try:
-                if len(match.group(1)) == 4:
-                    y, m, d = int(match.group(1)), int(match.group(2)), int(match.group(3))
-                else:
-                    d, m, y = int(match.group(1)), int(match.group(2)), int(match.group(3))
-                parsed = _dt.date(y, m, d)
-                if _dt.date(2020, 1, 1) <= parsed <= _dt.date(2035, 12, 31):
-                    dates.append(parsed)
-            except Exception:
+            parsed = _parse_date_match(match)
+            if parsed:
+                dates.append(parsed)
+    return sorted(set(dates))
+
+
+def _parse_date_match(match: re.Match) -> _dt.date | None:
+    try:
+        if len(match.group(1)) == 4:
+            y, m, d = int(match.group(1)), int(match.group(2)), int(match.group(3))
+        else:
+            d, m, y = int(match.group(1)), int(match.group(2)), int(match.group(3))
+        parsed = _dt.date(y, m, d)
+        if _dt.date(2020, 1, 1) <= parsed <= _dt.date(2035, 12, 31):
+            return parsed
+    except Exception:
+        return None
+    return None
+
+
+def extract_deadline_dates(value: str) -> list[_dt.date]:
+    """Extrai datas que aparecem perto de termos de prazo/submissao.
+
+    Usar simplesmente a maior data da pagina gera falso positivo: cronograma, recurso,
+    resultado ou evento podem ter datas posteriores ao prazo de submissao.
+    """
+    text = value or ""
+    norm = normalize_for_match(text)
+    deadline_terms = (
+        "prazo", "submissao", "submissão", "inscricao", "inscrição", "inscricoes", "inscrições",
+        "envio de propostas", "propostas ate", "propostas até", "ate", "até", "encerramento",
+        "data limite", "limite para", "candidatura", "submeter", "submeta",
+    )
+    dates: list[_dt.date] = []
+    negative_terms = ("resultado", "homologacao", "homologação", "recurso", "recursos", "divulgacao", "divulgação", "publicacao", "publicação")
+    for pattern in DATE_PATTERNS:
+        for match in pattern.finditer(text):
+            parsed = _parse_date_match(match)
+            if not parsed:
                 continue
+            # Janela por frase/paragrafo, nao por trecho enorme: evita pegar "resultado final"
+            # apenas porque uma frase anterior tinha "inscricoes ate".
+            left_candidates = [text.rfind(sep, 0, match.start()) for sep in (".", ";", "\n", "|")]
+            right_candidates = [idx for idx in [text.find(sep, match.end()) for sep in (".", ";", "\n", "|")] if idx != -1]
+            start = max(left_candidates) + 1 if max(left_candidates) >= 0 else max(0, match.start() - 55)
+            end = min(right_candidates) if right_candidates else min(len(text), match.end() + 55)
+            window = normalize_for_match(text[start:end])
+            has_deadline = any(normalize_for_match(term) in window for term in deadline_terms)
+            has_negative = any(normalize_for_match(term) in window for term in negative_terms)
+            if has_deadline and not has_negative:
+                dates.append(parsed)
+    # Frases muito comuns: "até 21/05/2026" podem perder contexto após normalizacao curta.
+    for match in re.finditer(r"\b(?:ate|até|ate o dia|até o dia)\s+(\d{1,2}[/-]\d{1,2}[/-]20\d{2})", norm, flags=re.I):
+        dates.extend(extract_dates(match.group(1)))
     return sorted(set(dates))
 
 

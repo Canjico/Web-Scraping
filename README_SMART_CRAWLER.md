@@ -68,3 +68,7 @@ SMART_IA_MAX_DOCS_READ=3             # documentos lidos para análise da IA por 
 ## Observação honesta
 
 Nenhum scraping fica literalmente 100% imortal. O ganho aqui é que a falha deixa de ser silenciosa: o sistema tenta seletores legados, fallback genérico, sitemap, URLs embutidas, classificação semântica e ainda gera auditoria por fonte. Isso aproxima o projeto de um coletor 10/10 porque ele passa a ser resiliente, rastreável e revisável.
+
+## Hardening adicional
+
+Veja também `README_10_10_HARDENING.md` para o pacote de melhorias aplicado: execução adaptativa, detecção de documentos sem extensão, links escondidos em HTML/JS, sitemap encadeado, prazo contextual e testes de fumaça.

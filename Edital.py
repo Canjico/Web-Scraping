@@ -21,10 +21,10 @@ except Exception:  # pragma: no cover
 # Agendador + executor de scrapers de editais
 #
 # Uso (recomendado):
-#   python -m sites.Edital                 -> entra no agendador (padrão 00, 06, 18)
-#   python -m sites.Edital --run-now       -> roda agora e depois agenda
-#   python -m sites.Edital --once          -> roda uma vez e encerra (teste/CI)
-#   python -m sites.Edital --horarios 0,6,18
+#   python Edital.py                         -> entra no agendador (padrão 00, 06, 18)
+#   python Edital.py --run-now               -> roda agora e depois agenda
+#   python Edital.py --once                  -> roda uma vez e encerra (teste/CI)
+#   python Edital.py --horarios 0,6,18
 #
 # Observação: pode funcionar também como script direto:
 #   python Edital.py --once
@@ -76,9 +76,17 @@ def _script_fonte_label(arquivo: str) -> str:
 
 
 def _build_exec_command(arquivo: str) -> list[str]:
+    """Monta comando sem assumir que a pasta do projeto se chama `sites`.
+
+    No servidor o pacote pode estar instalado como `sites`, mas no ZIP/local a pasta pode se chamar
+    `Web-Scraping-main`. Assumir `python -m sites.FONTE` fazia o legado quebrar antes mesmo do
+    fallback entrar. O modo direto preserva os stubs atuais e funciona em qualquer nome de pasta.
+    """
+    prefer_module = os.getenv("SCRAPER_EXEC_AS_MODULE", "0") == "1"
     module_name = arquivo[:-3]
-    if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", module_name):
-        return [sys.executable, "-m", f"sites.{module_name}"]
+    package_name = os.getenv("SCRAPER_PACKAGE_NAME", os.path.basename(PROJETO_DIR))
+    if prefer_module and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", module_name):
+        return [sys.executable, "-m", f"{package_name}.{module_name}"]
     return [sys.executable, os.path.join(PROJETO_DIR, arquivo)]
 
 

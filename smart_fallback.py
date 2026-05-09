@@ -32,8 +32,12 @@ def run(script: str = "", fonte: str = "", url: str = "", persist: bool = False)
     crawler = SmartCrawler(source)
     report = crawler.crawl()
     payload = report_to_dict(report)
+    ok = report.pages_fetched > 0 or len(report.candidates) > 0 or report.documents_seen > 0
+    status = "ok" if ok else "fonte_nao_capturada"
     summary = {
-        "ok": True,
+        "ok": ok,
+        "status": status,
+        "degraded": not ok or bool(report.pages_failed and report.pages_fetched == 0),
         "source": source.name,
         "pages_fetched": report.pages_fetched,
         "pages_failed": report.pages_failed,
@@ -43,6 +47,8 @@ def run(script: str = "", fonte: str = "", url: str = "", persist: bool = False)
         "persisted": 0,
         "warnings": report.warnings[:20],
     }
+    if not ok:
+        summary["error"] = "Nenhuma pagina/documento/candidato foi capturado pela fonte. Isso nao deve ser tratado como sucesso silencioso."
 
     if persist:
         persisted = persist_report(report, use_ia=os.getenv("SMART_USE_IA", "1") == "1")
