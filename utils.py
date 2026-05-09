@@ -265,16 +265,53 @@ def print_error(msg: str):
 
 load_dotenv()
 
-AZURE_API_KEY = os.getenv("AZURE_OPENAI_KEY")
-AZURE_ENDPOINT = "https://thall-mj3g48g6-eastus2.services.ai.azure.com"
-DEPLOYMENT_NAME = "gpt-5.2-chat"
-API_VERSION = "2024-12-01-preview"
+
+def _env_first(*names: str, default: str = "") -> str:
+    """Retorna a primeira variavel de ambiente preenchida.
+
+    Mantem compatibilidade com os nomes antigos e permite configurar Azure
+    OpenAI 100% pelo .env, sem endpoint/deployment hardcoded no codigo.
+    """
+    for name in names:
+        value = os.getenv(name)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return default
+
+
+def _normalize_azure_endpoint(endpoint: str) -> str:
+    value = (endpoint or "").strip().rstrip("/")
+    if value.endswith("/openai"):
+        value = value[: -len("/openai")]
+    marker = "/openai/deployments/"
+    if marker in value:
+        value = value.split(marker, 1)[0]
+    return value
+
+
+AZURE_API_KEY = _env_first("AZURE_OPENAI_API_KEY", "AZURE_OPENAI_KEY", "AZURE_API_KEY")
+AZURE_ENDPOINT = _normalize_azure_endpoint(_env_first(
+    "AZURE_OPENAI_ENDPOINT",
+    "AZURE_ENDPOINT",
+    default="https://thall-mj3g48g6-eastus2.services.ai.azure.com",
+))
+DEPLOYMENT_NAME = _env_first(
+    "AZURE_OPENAI_DEPLOYMENT",
+    "AZURE_OPENAI_CHAT_DEPLOYMENT",
+    "AZURE_DEPLOYMENT_NAME",
+    default="gpt-5.2-chat",
+)
+API_VERSION = _env_first(
+    "AZURE_OPENAI_API_VERSION",
+    "AZURE_API_VERSION",
+    default="2024-12-01-preview",
+)
 
 SQL_CONNECTION_STRING = os.getenv("SQL_CONNECTION_STRING")
 FRONTEND_APP_URL = os.getenv("FRONTEND_APP_URL", "http://127.0.0.1:5500/editais.html")
 
 if not AZURE_API_KEY:
-    logger.warning("[AVISO] AZURE_OPENAI_KEY nao configurada. Funcionalidades de IA podem falhar.")
+    logger.warning("[AVISO] AZURE_OPENAI_API_KEY/AZURE_OPENAI_KEY nao configurada. Funcionalidades de IA podem falhar.")
 if not SQL_CONNECTION_STRING:
     logger.error("[ERRO] SQL_CONNECTION_STRING nao configurada. O acesso ao banco pode falhar.")
 
@@ -658,7 +695,7 @@ def get_openai_client():
     if OpenAI is None:
         raise RuntimeError("Dependencia openai nao instalada. Instale requirements.txt para usar IA.")
     if not AZURE_API_KEY:
-        raise ValueError("AZURE_OPENAI_KEY nao configurada.")
+        raise ValueError("AZURE_OPENAI_API_KEY/AZURE_OPENAI_KEY nao configurada.")
     return OpenAI(
         api_key=AZURE_API_KEY,
         base_url=f"{AZURE_ENDPOINT}/openai/deployments/{DEPLOYMENT_NAME}",

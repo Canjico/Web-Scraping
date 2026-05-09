@@ -36,3 +36,12 @@
 - `tests/test_runtime_hardening.py`
 - `health_check.py`
 - `README_10_10_HARDENING.md`
+
+
+## Ajuste extra de configuracao Azure/.env
+
+- `utils.py` agora lê `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_DEPLOYMENT` e `AZURE_OPENAI_API_VERSION` do `.env`.
+- Mantida compatibilidade com os valores antigos como fallback para não quebrar execução existente.
+- `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_KEY` e `AZURE_API_KEY` são aceitos como chave principal.
+- `.env.example` foi expandido com variáveis de banco, IA principal, Web Check, web search, crawler agressivo e timeouts.
+- `health_check.py` agora valida se o `.env.example` documenta as variáveis críticas de Azure/Web Check.

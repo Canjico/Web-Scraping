@@ -106,6 +106,17 @@ def run_checks() -> dict:
 
     env_example = _read(PROJECT_DIR / ".env.example")
     required_envs = [
+        "SQL_CONNECTION_STRING",
+        "FRONTEND_APP_URL",
+        "AZURE_OPENAI_KEY",
+        "AZURE_OPENAI_ENDPOINT",
+        "AZURE_OPENAI_DEPLOYMENT",
+        "AZURE_OPENAI_API_VERSION",
+        "AZURE_OPENAI_WEBCHECK_ENDPOINT",
+        "AZURE_OPENAI_WEBCHECK_DEPLOYMENT",
+        "AZURE_OPENAI_WEBCHECK_API_VERSION",
+        "AZURE_OPENAI_WEBSEARCH_ENABLED",
+        "ENABLE_WEB_CHECK",
         "ENABLE_SMART_FALLBACK",
         "SMART_FALLBACK_ON_SUCCESS",
         "SCRAPER_SUBPROCESS_TIMEOUT_SECONDS",
