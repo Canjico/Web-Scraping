@@ -45,3 +45,9 @@
 - `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_KEY` e `AZURE_API_KEY` são aceitos como chave principal.
 - `.env.example` foi expandido com variáveis de banco, IA principal, Web Check, web search, crawler agressivo e timeouts.
 - `health_check.py` agora valida se o `.env.example` documenta as variáveis críticas de Azure/Web Check.
+
+## Ajuste 2026-05-07 - Link do painel x link original
+
+- Separada a nocao de `link_painel` (`FRONTEND_APP_URL?id=<id>`) da nocao de `link_original` (URL oficial/tokenizada capturada no site fonte).
+- Mantido o campo antigo `link` apontando para o painel por compatibilidade com logs/notificacoes antigas.
+- Adicionado teste para garantir que URLs tokenizadas, como `/editais/share/edital/<token>`, nao sejam substituidas pelo link interno do painel.

@@ -37,6 +37,22 @@ class RuntimeHardeningTests(unittest.TestCase):
         self.assertIsInstance(report["existing"], list)
         self.assertIsInstance(report["compatible"], list)
 
+
+    def test_new_edital_summary_keeps_frontend_and_original_links_separated(self):
+        sample = {
+            "id": 123,
+            "titulo": "Edital tokenizado",
+            "fonte": "ATIMUS",
+            "json_data": '{"link_original": "https://atimus.agr.br/athos/editais/share/edital/8a019bb1908a4e809085f5a35e9fd9e40676a197cb7b42dabb080e071c64fed2"}',
+        }
+        summary = Edital._build_new_edital_summary(sample)
+        self.assertEqual(summary["link_painel"], f"{Edital.utils.FRONTEND_APP_URL}?id=123")
+        self.assertEqual(summary["link"], summary["link_painel"])
+        self.assertEqual(
+            summary["link_original"],
+            "https://atimus.agr.br/athos/editais/share/edital/8a019bb1908a4e809085f5a35e9fd9e40676a197cb7b42dabb080e071c64fed2",
+        )
+
     def test_wrappers_have_direct_smart_fallback(self):
         wrapper_files = [ROOT / name for name in Edital.SCRIPTS if (ROOT / name).read_text(encoding="utf-8", errors="ignore").find("load_module_from_pyc") >= 0]
         self.assertGreater(len(wrapper_files), 0)

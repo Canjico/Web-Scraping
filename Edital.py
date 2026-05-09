@@ -116,6 +116,90 @@ def _env_flag(name: str, default: str = "1") -> bool:
 
 
 
+
+
+def _safe_json_loads(value):
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    try:
+        parsed = json.loads(value)
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def _first_nonempty(*values):
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str):
+            clean = value.strip()
+            if clean:
+                return clean
+        elif value:
+            return value
+    return ""
+
+
+def _looks_like_http_url(value: str) -> bool:
+    return isinstance(value, str) and value.strip().lower().startswith(("http://", "https://"))
+
+
+def _extract_original_link(edital: dict) -> str:
+    """Retorna o link oficial capturado no site fonte, sem confundir com o link do painel.
+
+    Muitos portais usam rotas tokenizadas, por exemplo:
+    https://site.gov.br/editais/share/edital/<token>. Esse valor deve ser preservado como
+    link_original/link_fonte. O FRONTEND_APP_URL e o ?id=... servem apenas para abrir a
+    tela interna do painel.
+    """
+    payload = _safe_json_loads(edital.get("json_data"))
+    smart_meta = payload.get("smart_crawler") if isinstance(payload.get("smart_crawler"), dict) else {}
+
+    candidates = [
+        edital.get("link_original"),
+        edital.get("url_edital"),
+        edital.get("url"),
+        edital.get("link_fonte"),
+        payload.get("link_original"),
+        payload.get("url_edital"),
+        payload.get("url"),
+        payload.get("link"),
+        smart_meta.get("url"),
+        edital.get("link_origem"),
+    ]
+    for candidate in candidates:
+        clean = str(candidate or "").strip()
+        if _looks_like_http_url(clean):
+            return clean
+    return ""
+
+
+def _build_frontend_link(edital_id) -> str:
+    if edital_id in (None, ""):
+        return ""
+    base = str(getattr(utils, "FRONTEND_APP_URL", "") or "").strip()
+    if not base:
+        return ""
+    separator = "&" if "?" in base else "?"
+    return f"{base}{separator}id={edital_id}"
+
+
+def _build_new_edital_summary(edital: dict) -> dict:
+    edital_id = edital.get("id")
+    link_painel = _build_frontend_link(edital_id)
+    link_original = _extract_original_link(edital)
+    return {
+        "id": edital_id,
+        "titulo": edital.get("titulo"),
+        "fonte": edital.get("fonte"),
+        "link": link_painel,  # compatibilidade com consumidores antigos do log/notificacao
+        "link_painel": link_painel,
+        "link_original": link_original,
+    }
+
 def _env_int(name: str, default: int, minimum: int = 1, maximum: int | None = None) -> int:
     try:
         value = int(str(os.getenv(name, str(default))).strip())
@@ -601,12 +685,7 @@ def executar_ciclo(nome_ciclo: str = "Manual") -> None:
                 "tempo_fim": str(fim_script),
                 "qtd_editais_novos": qtd_novos,
                 "editais_novos": [
-                    {
-                        "id": e.get("id"),
-                        "titulo": e.get("titulo"),
-                        "fonte": e.get("fonte"),
-                        "link": f"{utils.FRONTEND_APP_URL}?id={e.get('id')}",
-                    }
+                    _build_new_edital_summary(e)
                     for e in novos_script[:30]
                 ],
                 "stdout_tail": stdout_completo[-1200:],
