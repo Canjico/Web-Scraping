@@ -39,6 +39,10 @@ IGNORAR = {
     "utils.py",
     "Edital.py",
     "_pyc_bridge.py",
+    "web_check.py",
+    "source_registry.py",
+    "smart_crawler.py",
+    "smart_fallback.py",
 }
 
 SCRIPTS = sorted(
@@ -47,10 +51,11 @@ SCRIPTS = sorted(
     if f.endswith(".py") and f not in IGNORAR and not f.startswith("_")
 )
 TOTAL_SCRIPTS = len(SCRIPTS)
-FONTES_TOTAL_DIARIAS = max(
-    TOTAL_SCRIPTS,
-    int(os.getenv("FONTES_TOTAL_DIARIAS", os.getenv("SCRAPER_FONTES_TOTAL", "42"))),
-)
+try:
+    _FONTES_TOTAL_CONFIG = int(os.getenv("FONTES_TOTAL_DIARIAS", os.getenv("SCRAPER_FONTES_TOTAL", str(TOTAL_SCRIPTS))))
+except Exception:
+    _FONTES_TOTAL_CONFIG = TOTAL_SCRIPTS
+FONTES_TOTAL_DIARIAS = max(TOTAL_SCRIPTS, _FONTES_TOTAL_CONFIG)
 
 TZ_NAME = os.getenv("SCRAPER_TZ", "America/Sao_Paulo")
 _TZ = None
@@ -92,6 +97,77 @@ def _extract_error_reason(stdout: str, stderr: str, returncode: int) -> str:
             return f"Processo encerrou com codigo {returncode} | detalhe: {detalhe[:220]}"
         return f"Processo encerrou com codigo {returncode}"
     return ""
+
+
+def _env_flag(name: str, default: str = "1") -> bool:
+    return str(os.getenv(name, default)).strip().lower() not in {"0", "false", "nao", "não", "no", "off"}
+
+
+def _smart_fallback_enabled() -> bool:
+    return _env_flag("ENABLE_SMART_FALLBACK", "1")
+
+
+def _smart_fallback_on_success() -> bool:
+    return _env_flag("SMART_FALLBACK_ON_SUCCESS", "1")
+
+
+def _extract_smart_summary(stdout: str) -> dict:
+    for line in reversed((stdout or "").splitlines()):
+        marker = "[SMART-JSON]"
+        if marker in line:
+            raw = line.split(marker, 1)[1].strip()
+            try:
+                parsed = json.loads(raw)
+                return parsed if isinstance(parsed, dict) else {}
+            except Exception:
+                return {"ok": False, "error": "Falha ao parsear resumo SMART"}
+    return {}
+
+
+def _executar_smart_fallback(arquivo: str, fonte_label: str) -> dict:
+    if not _smart_fallback_enabled():
+        return {"enabled": False, "summary": {}, "stdout": "", "stderr": "", "returncode": None}
+
+    smart_path = os.path.join(PROJETO_DIR, "smart_fallback.py")
+    if not os.path.exists(smart_path):
+        return {"enabled": False, "summary": {}, "stdout": "", "stderr": "", "returncode": None}
+
+    cmd = [sys.executable, smart_path, "--script", arquivo, "--fonte", fonte_label, "--persist"]
+    try:
+        env_exec = os.environ.copy()
+        env_exec.setdefault("PYTHONUTF8", "1")
+        env_exec.setdefault("PYTHONIOENCODING", "utf-8")
+        result = subprocess.run(
+            cmd,
+            cwd=PROJETO_DIR,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env_exec,
+        )
+        summary = _extract_smart_summary(result.stdout or "")
+        if not summary:
+            summary = {"ok": result.returncode == 0, "persisted": 0, "candidates": 0}
+        if result.returncode != 0:
+            summary.setdefault("ok", False)
+            summary.setdefault("error", _extract_error_reason(result.stdout or "", result.stderr or "", result.returncode))
+        return {
+            "enabled": True,
+            "summary": summary,
+            "stdout": result.stdout or "",
+            "stderr": result.stderr or "",
+            "returncode": result.returncode,
+        }
+    except Exception as exc:
+        return {
+            "enabled": True,
+            "summary": {"ok": False, "error": str(exc), "persisted": 0, "candidates": 0},
+            "stdout": "",
+            "stderr": str(exc),
+            "returncode": None,
+        }
 
 
 def _sanitize_filename_part(value: str) -> str:
@@ -249,6 +325,13 @@ def _escrever_log_script(
     _append_log_txt(caminho_log, f"divergencias_web_check: {resumo['divergencias_web_check']}")
     _append_log_txt(caminho_log, f"causa_erro: {motivo_falha or '-'}")
 
+    if "[SMART_FALLBACK_STDOUT]" in (stdout_tail or ""):
+        smart_block = (stdout_tail or "").split("[SMART_FALLBACK_STDOUT]", 1)[-1]
+        for line in smart_block.splitlines():
+            if "[SMART-JSON]" in line:
+                _append_log_txt(caminho_log, f"smart_fallback: {line.strip()}")
+                break
+
     if resumo["amostra"]:
         _append_log_txt(caminho_log, "editais_novos:")
         for edital in resumo["amostra"][:50]:
@@ -344,30 +427,62 @@ def executar_ciclo(nome_ciclo: str = "Manual") -> None:
                 env=env_exec,
             )
 
-            fim_script = utils.obter_data_sql()
-            novos_script = utils.obter_editais_criados_desde(inicio_script)
-            qtd_novos = len(novos_script)
-
-            motivo_falha = _extract_error_reason(
+            motivo_legacy = _extract_error_reason(
                 run_result.stdout or "",
                 run_result.stderr or "",
                 run_result.returncode,
             )
-            status_execucao = "erro" if motivo_falha else "sucesso"
 
-            if status_execucao == "sucesso":
+            smart_result = {"enabled": False, "summary": {}, "stdout": "", "stderr": "", "returncode": None}
+            if _smart_fallback_enabled() and (_smart_fallback_on_success() or motivo_legacy):
+                utils.print_info(f"[SMART] Rodando fallback inteligente para {fonte_label}...")
+                smart_result = _executar_smart_fallback(arquivo, fonte_label)
+
+            fim_script = utils.obter_data_sql()
+            novos_script = utils.obter_editais_criados_desde(inicio_script)
+            qtd_novos = len(novos_script)
+
+            smart_summary = smart_result.get("summary") if isinstance(smart_result, dict) else {}
+            smart_persisted = int((smart_summary or {}).get("persisted") or 0) if isinstance(smart_summary, dict) else 0
+            smart_error = str((smart_summary or {}).get("error") or "").strip() if isinstance(smart_summary, dict) else ""
+
+            if motivo_legacy and smart_persisted > 0:
+                status_execucao = "sucesso_com_fallback"
+                motivo_falha = None
+                motivo_observacao = f"Legado falhou, mas SMART persistiu {smart_persisted} candidato(s). Falha legado: {motivo_legacy}"
+            elif motivo_legacy:
+                status_execucao = "erro"
+                motivo_falha = motivo_legacy
+                motivo_observacao = motivo_legacy
+            else:
+                status_execucao = "sucesso"
+                motivo_falha = None
+                motivo_observacao = smart_error if smart_error else None
+
+            if status_execucao in {"sucesso", "sucesso_com_fallback"}:
                 fontes_ok += 1
-                utils.print_success(f"Fonte processada com sucesso: {fonte_label} | novos={qtd_novos}")
+                utils.print_success(f"Fonte processada: {fonte_label} | status={status_execucao} | novos={qtd_novos} | smart_persistidos={smart_persisted}")
+                if smart_error and not motivo_legacy:
+                    utils.print_info(f"[SMART] Aviso controlado em {fonte_label}: {smart_error}")
             else:
                 fontes_erro += 1
                 utils.print_error(f"Fonte com erro: {fonte_label} | motivo={motivo_falha}")
+
+            stdout_completo = (run_result.stdout or "")
+            stderr_completo = (run_result.stderr or "")
+            if smart_result.get("enabled"):
+                stdout_completo += "\n\n[SMART_FALLBACK_STDOUT]\n" + (smart_result.get("stdout") or "")
+                stderr_completo += "\n\n[SMART_FALLBACK_STDERR]\n" + (smart_result.get("stderr") or "")
 
             detalhes = {
                 "script": arquivo,
                 "fonte_processada": fonte_label,
                 "status_execucao": status_execucao,
                 "motivo_falha": motivo_falha or None,
+                "observacao": motivo_observacao,
                 "return_code": run_result.returncode,
+                "smart_fallback": smart_summary,
+                "smart_return_code": smart_result.get("returncode"),
                 "tempo_inicio": str(inicio_script),
                 "tempo_fim": str(fim_script),
                 "qtd_editais_novos": qtd_novos,
@@ -380,8 +495,8 @@ def executar_ciclo(nome_ciclo: str = "Manual") -> None:
                     }
                     for e in novos_script[:30]
                 ],
-                "stdout_tail": (run_result.stdout or "")[-1200:],
-                "stderr_tail": (run_result.stderr or "")[-1200:],
+                "stdout_tail": stdout_completo[-1200:],
+                "stderr_tail": stderr_completo[-1200:],
                 "fonte_index": i,
                 "fontes_total_implementadas": TOTAL_SCRIPTS,
                 "fontes_total_config": FONTES_TOTAL_DIARIAS,
@@ -400,15 +515,15 @@ def executar_ciclo(nome_ciclo: str = "Manual") -> None:
                 motivo_falha=motivo_falha or None,
                 return_code=run_result.returncode,
                 novos_script=novos_script,
-                stdout_tail=run_result.stdout or "",
-                stderr_tail=run_result.stderr or "",
+                stdout_tail=stdout_completo,
+                stderr_tail=stderr_completo,
             )
 
             # Erro de auditoria nao deve invalidar scraping bem-sucedido.
             utils.registrar_log_auditoria(
                 nome_ciclo,
                 fonte_label,
-                qtd_novos if status_execucao == "sucesso" else 0,
+                qtd_novos if status_execucao in {"sucesso", "sucesso_com_fallback"} else 0,
                 detalhes,
                 status=status_execucao,
             )

@@ -1,0 +1,164 @@
+{
+  "ARAUCARA.py": {
+    "name": "ARAUCARIA",
+    "base_url": "https://www.fappr.pr.gov.br",
+    "start_urls": ["https://www.fappr.pr.gov.br/Programas-Abertos"],
+    "allowed_domains": ["fappr.pr.gov.br"]
+  },
+  "BASF.py": {
+    "name": "BASF AgroStart",
+    "base_url": "https://agriculture.basf.com",
+    "start_urls": ["https://agriculture.basf.com/global/en/innovations-for-agriculture/agrostart/challenges"],
+    "allowed_domains": ["agriculture.basf.com"]
+  },
+  "CNPQ.py": {
+    "name": "CNPq",
+    "base_url": "http://memoria2.cnpq.br",
+    "start_urls": ["http://memoria2.cnpq.br/web/guest/chamadas-publicas#void"],
+    "allowed_domains": ["memoria2.cnpq.br", "www.gov.br", "cnpq.br"]
+  },
+  "COCA-COLA.py": {
+    "name": "Coca-Cola",
+    "base_url": "https://www.ideiasparaummundomelhor25.com.br",
+    "start_urls": ["https://www.ideiasparaummundomelhor25.com.br/"],
+    "allowed_domains": ["ideiasparaummundomelhor25.com.br", "www.ideiasparaummundomelhor25.com.br"]
+  },
+  "CONFAP.py": {
+    "name": "CONFAP",
+    "base_url": "https://confap.org.br",
+    "start_urls": ["https://confap.org.br/pt/editais/status=em-andamento"],
+    "allowed_domains": ["confap.org.br"]
+  },
+  "CRESOL.py": {
+    "name": "Instituto Cresol",
+    "base_url": "https://cresol.com.br",
+    "start_urls": ["https://cresol.com.br/instituto/"],
+    "allowed_domains": ["cresol.com.br"]
+  },
+  "FACEPE.py": {
+    "name": "FACEPE",
+    "base_url": "https://www.facepe.br",
+    "start_urls": ["https://www.facepe.br/editais/todos/?c=aberto"],
+    "allowed_domains": ["facepe.br", "www.facepe.br"]
+  },
+  "FAPAEL.py": {
+    "name": "FAPEAL",
+    "base_url": "https://www.fapeal.br",
+    "start_urls": ["https://www.fapeal.br/category/editais/chamadas-abertas/"],
+    "allowed_domains": ["fapeal.br", "www.fapeal.br"]
+  },
+  "FAPAEP.py": {
+    "name": "FAPEAP",
+    "base_url": "https://fapeap.portal.ap.gov.br",
+    "start_urls": ["https://fapeap.portal.ap.gov.br/publicacoes"],
+    "allowed_domains": ["fapeap.portal.ap.gov.br"]
+  },
+  "FAPEG.py": {
+    "name": "FAPEG",
+    "base_url": "https://goias.gov.br/fapeg",
+    "start_urls": ["https://goias.gov.br/fapeg/editais/inscricoes-abertas/"],
+    "allowed_domains": ["goias.gov.br"]
+  },
+  "FAPERN.py": {
+    "name": "FAPERN",
+    "base_url": "http://www.fapern.rn.gov.br",
+    "start_urls": ["http://www.fapern.rn.gov.br/Conteudo.asp?TRAN=ITEM&TARG=15517&ACT=&PAGE=0&PARM=&LBL=Editais"],
+    "allowed_domains": ["fapern.rn.gov.br", "www.fapern.rn.gov.br"]
+  },
+  "FAPERO.py": {
+    "name": "FAPERO",
+    "base_url": "https://rondonia.ro.gov.br",
+    "start_urls": ["https://rondonia.ro.gov.br/fapero/"],
+    "allowed_domains": ["rondonia.ro.gov.br"]
+  },
+  "FAPES.py": {
+    "name": "FAPES",
+    "base_url": "https://fapes.es.gov.br",
+    "start_urls": ["https://fapes.es.gov.br/Editais/Abertos"],
+    "allowed_domains": ["fapes.es.gov.br"]
+  },
+  "FAPESB.py": {
+    "name": "FAPESB",
+    "base_url": "https://www.fapesb.ba.gov.br",
+    "start_urls": ["https://www.fapesb.ba.gov.br/category/edital/"],
+    "allowed_domains": ["fapesb.ba.gov.br", "www.fapesb.ba.gov.br"]
+  },
+  "FAPESC.py": {
+    "name": "FAPESC",
+    "base_url": "https://fapesc.sc.gov.br",
+    "start_urls": ["https://fapesc.sc.gov.br/chamadas-abertas/"],
+    "allowed_domains": ["fapesc.sc.gov.br"]
+  },
+  "FAPESP.py": {
+    "name": "FAPESP",
+    "base_url": "https://fapesp.br",
+    "start_urls": ["https://fapesp.br/chamadas/"],
+    "allowed_domains": ["fapesp.br", "www.fapesp.br"]
+  },
+  "FAPESQ.py": {
+    "name": "FAPESQ",
+    "base_url": "https://fapesq.rpp.br",
+    "start_urls": ["https://fapesq.rpp.br/editais/editais-abertos"],
+    "allowed_domains": ["fapesq.rpp.br"]
+  },
+  "FAPITEC.py": {
+    "name": "FAPITEC",
+    "base_url": "https://fapitec.se.gov.br",
+    "start_urls": ["https://fapitec.se.gov.br/editais-abertos/"],
+    "allowed_domains": ["fapitec.se.gov.br"]
+  },
+  "FAPT.py": {
+    "name": "FAPT",
+    "base_url": "https://www.to.gov.br",
+    "start_urls": ["https://www.to.gov.br/fapt/01-editais-abertos/5sy36y0lf49g"],
+    "allowed_domains": ["www.to.gov.br", "to.gov.br"]
+  },
+  "FINEP.py": {
+    "name": "FINEP",
+    "base_url": "http://www.finep.gov.br",
+    "start_urls": ["http://www.finep.gov.br/chamadas-publicas?situacao=aberta"],
+    "allowed_domains": ["finep.gov.br", "www.finep.gov.br"]
+  },
+  "FUNCAP.py": {
+    "name": "FUNCAP",
+    "base_url": "https://montenegro.funcap.ce.gov.br/sugba",
+    "start_urls": ["https://montenegro.funcap.ce.gov.br/sugba/editais-site-wordpress"],
+    "allowed_domains": ["montenegro.funcap.ce.gov.br", "funcap.ce.gov.br"]
+  },
+  "FUNDECT.py": {
+    "name": "FUNDECT",
+    "base_url": "https://www.fundect.ms.gov.br",
+    "start_urls": ["https://www.fundect.ms.gov.br/category/chamadas-abertas/"],
+    "allowed_domains": ["fundect.ms.gov.br", "www.fundect.ms.gov.br"]
+  },
+  "IAF.py": {
+    "name": "IAF",
+    "base_url": "https://iaf.gov",
+    "start_urls": ["https://iaf.gov/pt/solicite-fundos/"],
+    "allowed_domains": ["iaf.gov"]
+  },
+  "MININGHUB.py": {
+    "name": "Mining Hub",
+    "base_url": "https://mininghub.com.br",
+    "start_urls": ["https://mininghub.com.br/m-start/"],
+    "allowed_domains": ["mininghub.com.br"]
+  },
+  "SENAI.py": {
+    "name": "SENAI Plataforma Inovação",
+    "base_url": "https://www.portaldaindustria.com.br",
+    "start_urls": ["https://www.portaldaindustria.com.br/canais/plataforma-inovacao-para-industria/"],
+    "allowed_domains": ["portaldaindustria.com.br", "www.portaldaindustria.com.br"]
+  },
+  "TETRA PAK.py": {
+    "name": "Tetra Pak Startup",
+    "base_url": "https://www.tetrapak.com",
+    "start_urls": ["https://www.tetrapak.com/pt-br/startup-tetra-pak"],
+    "allowed_domains": ["tetrapak.com", "www.tetrapak.com"]
+  },
+  "VALE.py": {
+    "name": "Vale Inovação",
+    "base_url": "https://vale.com",
+    "start_urls": ["https://vale.com/pt/inovacao"],
+    "allowed_domains": ["vale.com"]
+  }
+}
