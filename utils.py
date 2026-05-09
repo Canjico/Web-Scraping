@@ -6,6 +6,7 @@ import os
 import re
 import ssl
 import sys
+from pathlib import Path
 import unicodedata
 import warnings
 import xml.etree.ElementTree as ET
@@ -263,7 +264,88 @@ def print_error(msg: str):
     _safe_write(sys.stderr, _format_status_line("[ERRO]", msg))
 
 
-load_dotenv()
+
+def _manual_load_env_file(path: Path) -> bool:
+    """Carrega .env sem depender de python-dotenv.
+
+    Isso evita o bug clássico: o arquivo .env existe, mas a lib python-dotenv não está
+    instalada ou o script foi executado de outro diretório. Não sobrescreve variáveis já
+    presentes no ambiente do servidor.
+    """
+    try:
+        if not path.exists() or not path.is_file():
+            return False
+        loaded_any = False
+        for raw_line in path.read_text(encoding="utf-8-sig").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[len("export "):].strip()
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            if not key or not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+                continue
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+                value = value[1:-1]
+            os.environ.setdefault(key, value)
+            loaded_any = True
+        return loaded_any
+    except Exception as exc:
+        try:
+            logger.warning("[AVISO] Falha ao carregar .env manualmente em %s: %s", path, exc)
+        except Exception:
+            pass
+        return False
+
+
+def _load_project_dotenv() -> bool:
+    """Carrega o .env da pasta do projeto de forma explícita e previsível."""
+    candidates = []
+    try:
+        candidates.append(Path(__file__).resolve().parent / ".env")
+    except Exception:
+        pass
+    try:
+        candidates.append(Path.cwd() / ".env")
+    except Exception:
+        pass
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate.resolve()) if candidate.exists() else str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        if not candidate.exists():
+            continue
+
+        loaded = False
+        try:
+            loaded = bool(load_dotenv(dotenv_path=str(candidate), override=False))
+        except Exception:
+            loaded = False
+        if not loaded:
+            loaded = _manual_load_env_file(candidate)
+        if loaded:
+            os.environ.setdefault("SCRAPER_DOTENV_PATH", str(candidate))
+            return True
+    return False
+
+
+def _sync_env_aliases() -> None:
+    """Mantem aliases antigos/novos compatíveis entre módulos."""
+    key = (os.getenv("AZURE_OPENAI_API_KEY") or os.getenv("AZURE_OPENAI_KEY") or "").strip()
+    if key:
+        os.environ.setdefault("AZURE_OPENAI_API_KEY", key)
+        os.environ.setdefault("AZURE_OPENAI_KEY", key)
+
+
+_PROJECT_DOTENV_LOADED = _load_project_dotenv()
+_sync_env_aliases()
 
 
 def _env_first(*names: str, default: str = "") -> str:
