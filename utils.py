@@ -6,7 +6,6 @@ import os
 import re
 import ssl
 import sys
-from pathlib import Path
 import unicodedata
 import warnings
 import xml.etree.ElementTree as ET
@@ -14,39 +13,13 @@ import zipfile
 from typing import Any, Optional
 from urllib.parse import parse_qsl, urlencode, urlparse
 
-try:
-    import PyPDF2  # type: ignore
-except Exception:  # dependencia opcional para testes/smoke sem ambiente completo
-    PyPDF2 = None  # type: ignore
-
-try:
-    import pyodbc  # type: ignore
-except Exception:
-    pyodbc = None  # type: ignore
-
-try:
-    import pytesseract  # type: ignore
-except Exception:
-    pytesseract = None  # type: ignore
-
+import PyPDF2
+import pyodbc
+import pytesseract
 import requests
-
-try:
-    from dotenv import load_dotenv  # type: ignore
-except Exception:
-    def load_dotenv(*args, **kwargs):  # type: ignore
-        return False
-
-try:
-    from openai import OpenAI  # type: ignore
-except Exception:
-    OpenAI = None  # type: ignore
-
-try:
-    from pdf2image import convert_from_path  # type: ignore
-except Exception:
-    convert_from_path = None  # type: ignore
-
+from dotenv import load_dotenv
+from openai import OpenAI
+from pdf2image import convert_from_path
 from requests.adapters import HTTPAdapter, Retry
 from urllib3.exceptions import InsecureRequestWarning
 from urllib3.poolmanager import PoolManager
@@ -264,136 +237,18 @@ def print_error(msg: str):
     _safe_write(sys.stderr, _format_status_line("[ERRO]", msg))
 
 
+load_dotenv()
 
-def _manual_load_env_file(path: Path) -> bool:
-    """Carrega .env sem depender de python-dotenv.
-
-    Isso evita o bug clássico: o arquivo .env existe, mas a lib python-dotenv não está
-    instalada ou o script foi executado de outro diretório. Não sobrescreve variáveis já
-    presentes no ambiente do servidor.
-    """
-    try:
-        if not path.exists() or not path.is_file():
-            return False
-        loaded_any = False
-        for raw_line in path.read_text(encoding="utf-8-sig").splitlines():
-            line = raw_line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if line.startswith("export "):
-                line = line[len("export "):].strip()
-            if "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            key = key.strip()
-            value = value.strip()
-            if not key or not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
-                continue
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
-                value = value[1:-1]
-            os.environ.setdefault(key, value)
-            loaded_any = True
-        return loaded_any
-    except Exception as exc:
-        try:
-            logger.warning("[AVISO] Falha ao carregar .env manualmente em %s: %s", path, exc)
-        except Exception:
-            pass
-        return False
-
-
-def _load_project_dotenv() -> bool:
-    """Carrega o .env da pasta do projeto de forma explícita e previsível."""
-    candidates = []
-    try:
-        candidates.append(Path(__file__).resolve().parent / ".env")
-    except Exception:
-        pass
-    try:
-        candidates.append(Path.cwd() / ".env")
-    except Exception:
-        pass
-
-    seen: set[str] = set()
-    for candidate in candidates:
-        key = str(candidate.resolve()) if candidate.exists() else str(candidate)
-        if key in seen:
-            continue
-        seen.add(key)
-        if not candidate.exists():
-            continue
-
-        loaded = False
-        try:
-            loaded = bool(load_dotenv(dotenv_path=str(candidate), override=False))
-        except Exception:
-            loaded = False
-        if not loaded:
-            loaded = _manual_load_env_file(candidate)
-        if loaded:
-            os.environ.setdefault("SCRAPER_DOTENV_PATH", str(candidate))
-            return True
-    return False
-
-
-def _sync_env_aliases() -> None:
-    """Mantem aliases antigos/novos compatíveis entre módulos."""
-    key = (os.getenv("AZURE_OPENAI_API_KEY") or os.getenv("AZURE_OPENAI_KEY") or "").strip()
-    if key:
-        os.environ.setdefault("AZURE_OPENAI_API_KEY", key)
-        os.environ.setdefault("AZURE_OPENAI_KEY", key)
-
-
-_PROJECT_DOTENV_LOADED = _load_project_dotenv()
-_sync_env_aliases()
-
-
-def _env_first(*names: str, default: str = "") -> str:
-    """Retorna a primeira variavel de ambiente preenchida.
-
-    Mantem compatibilidade com os nomes antigos e permite configurar Azure
-    OpenAI 100% pelo .env, sem endpoint/deployment hardcoded no codigo.
-    """
-    for name in names:
-        value = os.getenv(name)
-        if value is not None and str(value).strip():
-            return str(value).strip()
-    return default
-
-
-def _normalize_azure_endpoint(endpoint: str) -> str:
-    value = (endpoint or "").strip().rstrip("/")
-    if value.endswith("/openai"):
-        value = value[: -len("/openai")]
-    marker = "/openai/deployments/"
-    if marker in value:
-        value = value.split(marker, 1)[0]
-    return value
-
-
-AZURE_API_KEY = _env_first("AZURE_OPENAI_API_KEY", "AZURE_OPENAI_KEY", "AZURE_API_KEY")
-AZURE_ENDPOINT = _normalize_azure_endpoint(_env_first(
-    "AZURE_OPENAI_ENDPOINT",
-    "AZURE_ENDPOINT",
-    default="https://thall-mj3g48g6-eastus2.services.ai.azure.com",
-))
-DEPLOYMENT_NAME = _env_first(
-    "AZURE_OPENAI_DEPLOYMENT",
-    "AZURE_OPENAI_CHAT_DEPLOYMENT",
-    "AZURE_DEPLOYMENT_NAME",
-    default="gpt-5.2-chat",
-)
-API_VERSION = _env_first(
-    "AZURE_OPENAI_API_VERSION",
-    "AZURE_API_VERSION",
-    default="2024-12-01-preview",
-)
+AZURE_API_KEY = os.getenv("AZURE_OPENAI_KEY")
+AZURE_ENDPOINT = "https://thall-mj3g48g6-eastus2.services.ai.azure.com"
+DEPLOYMENT_NAME = "gpt-5.2-chat"
+API_VERSION = "2024-12-01-preview"
 
 SQL_CONNECTION_STRING = os.getenv("SQL_CONNECTION_STRING")
 FRONTEND_APP_URL = os.getenv("FRONTEND_APP_URL", "http://127.0.0.1:5500/editais.html")
 
 if not AZURE_API_KEY:
-    logger.warning("[AVISO] AZURE_OPENAI_API_KEY/AZURE_OPENAI_KEY nao configurada. Funcionalidades de IA podem falhar.")
+    logger.warning("[AVISO] AZURE_OPENAI_KEY nao configurada. Funcionalidades de IA podem falhar.")
 if not SQL_CONNECTION_STRING:
     logger.error("[ERRO] SQL_CONNECTION_STRING nao configurada. O acesso ao banco pode falhar.")
 
@@ -773,11 +628,9 @@ def get_http_session() -> requests.Session:
     return session
 
 
-def get_openai_client():
-    if OpenAI is None:
-        raise RuntimeError("Dependencia openai nao instalada. Instale requirements.txt para usar IA.")
+def get_openai_client() -> OpenAI:
     if not AZURE_API_KEY:
-        raise ValueError("AZURE_OPENAI_API_KEY/AZURE_OPENAI_KEY nao configurada.")
+        raise ValueError("AZURE_OPENAI_KEY nao configurada.")
     return OpenAI(
         api_key=AZURE_API_KEY,
         base_url=f"{AZURE_ENDPOINT}/openai/deployments/{DEPLOYMENT_NAME}",
@@ -787,9 +640,6 @@ def get_openai_client():
 
 def extrair_texto_pdf(filepath: str) -> str:
     texto = ""
-    if PyPDF2 is None:
-        logger.warning("PyPDF2 nao instalado; pulando extracao de PDF sem OCR.")
-        return ""
     try:
         with open(filepath, "rb") as f:
             reader = PyPDF2.PdfReader(f)
@@ -829,9 +679,6 @@ def extrair_texto_generico(filepath: str) -> str:
 
 def extrair_texto_ocr(caminho_pdf: str) -> str:
     texto_final = []
-    if convert_from_path is None or pytesseract is None:
-        logger.warning("Dependencias de OCR ausentes; pulando OCR do PDF.")
-        return ""
     try:
         imagens = convert_from_path(caminho_pdf, dpi=300)
         for img in imagens:
@@ -914,8 +761,6 @@ def safe_rmtree(path: str):
 def _connect_sql():
     if not SQL_CONNECTION_STRING:
         raise RuntimeError("SQL_CONNECTION_STRING ausente.")
-    if pyodbc is None:
-        raise RuntimeError("Dependencia pyodbc nao instalada. Instale requirements.txt para usar o banco SQL.")
     return pyodbc.connect(SQL_CONNECTION_STRING)
 
 
