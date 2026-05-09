@@ -13,13 +13,39 @@ import zipfile
 from typing import Any, Optional
 from urllib.parse import parse_qsl, urlencode, urlparse
 
-import PyPDF2
-import pyodbc
-import pytesseract
+try:
+    import PyPDF2  # type: ignore
+except Exception:  # dependencia opcional para testes/smoke sem ambiente completo
+    PyPDF2 = None  # type: ignore
+
+try:
+    import pyodbc  # type: ignore
+except Exception:
+    pyodbc = None  # type: ignore
+
+try:
+    import pytesseract  # type: ignore
+except Exception:
+    pytesseract = None  # type: ignore
+
 import requests
-from dotenv import load_dotenv
-from openai import OpenAI
-from pdf2image import convert_from_path
+
+try:
+    from dotenv import load_dotenv  # type: ignore
+except Exception:
+    def load_dotenv(*args, **kwargs):  # type: ignore
+        return False
+
+try:
+    from openai import OpenAI  # type: ignore
+except Exception:
+    OpenAI = None  # type: ignore
+
+try:
+    from pdf2image import convert_from_path  # type: ignore
+except Exception:
+    convert_from_path = None  # type: ignore
+
 from requests.adapters import HTTPAdapter, Retry
 from urllib3.exceptions import InsecureRequestWarning
 from urllib3.poolmanager import PoolManager
@@ -628,7 +654,9 @@ def get_http_session() -> requests.Session:
     return session
 
 
-def get_openai_client() -> OpenAI:
+def get_openai_client():
+    if OpenAI is None:
+        raise RuntimeError("Dependencia openai nao instalada. Instale requirements.txt para usar IA.")
     if not AZURE_API_KEY:
         raise ValueError("AZURE_OPENAI_KEY nao configurada.")
     return OpenAI(
@@ -640,6 +668,9 @@ def get_openai_client() -> OpenAI:
 
 def extrair_texto_pdf(filepath: str) -> str:
     texto = ""
+    if PyPDF2 is None:
+        logger.warning("PyPDF2 nao instalado; pulando extracao de PDF sem OCR.")
+        return ""
     try:
         with open(filepath, "rb") as f:
             reader = PyPDF2.PdfReader(f)
@@ -679,6 +710,9 @@ def extrair_texto_generico(filepath: str) -> str:
 
 def extrair_texto_ocr(caminho_pdf: str) -> str:
     texto_final = []
+    if convert_from_path is None or pytesseract is None:
+        logger.warning("Dependencias de OCR ausentes; pulando OCR do PDF.")
+        return ""
     try:
         imagens = convert_from_path(caminho_pdf, dpi=300)
         for img in imagens:
@@ -761,6 +795,8 @@ def safe_rmtree(path: str):
 def _connect_sql():
     if not SQL_CONNECTION_STRING:
         raise RuntimeError("SQL_CONNECTION_STRING ausente.")
+    if pyodbc is None:
+        raise RuntimeError("Dependencia pyodbc nao instalada. Instale requirements.txt para usar o banco SQL.")
     return pyodbc.connect(SQL_CONNECTION_STRING)
 
 

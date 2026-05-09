@@ -1,8 +1,19 @@
+from __future__ import annotations
+
 import importlib.machinery
 import importlib.util
+import json
 import os
 import sys
 from types import ModuleType
+
+
+class LegacyPycCompatibilityError(RuntimeError):
+    """Erro explícito quando existe .pyc legado, mas incompatível com o Python atual."""
+
+
+class LegacyPycNotFoundError(FileNotFoundError):
+    """Erro explícito quando o wrapper legado não encontra bytecode para carregar."""
 
 
 def _candidate_pyc_paths(module_file: str) -> list[str]:
@@ -13,39 +24,57 @@ def _candidate_pyc_paths(module_file: str) -> list[str]:
         os.path.join(root_dir, "_pyc_original", f"{base_name}.{tag}.pyc"),
         os.path.join(root_dir, "__pycache__", f"{base_name}.{tag}.pyc"),
     ]
-    # Fallback auditavel: mostra pyc de outras versoes em vez de falhar dizendo que nao existe.
+    # Fallback auditável: lista bytecodes de outras versões para logar a causa real.
     for folder in (os.path.join(root_dir, "_pyc_original"), os.path.join(root_dir, "__pycache__")):
         try:
-            for name in sorted(os.listdir(folder)):
-                if name.startswith(base_name + ".") and name.endswith(".pyc"):
-                    path = os.path.join(folder, name)
-                    if path not in candidates:
-                        candidates.append(path)
-        except Exception:
-            pass
+            names = sorted(os.listdir(folder))
+        except OSError:
+            continue
+        for name in names:
+            if name.startswith(base_name + ".") and name.endswith(".pyc"):
+                path = os.path.join(folder, name)
+                if path not in candidates:
+                    candidates.append(path)
     return candidates
-
-
-def _pyc_path_for(module_file: str) -> str:
-    candidates = _candidate_pyc_paths(module_file)
-    for path in candidates:
-        if os.path.exists(path) and _pyc_magic_is_compatible(path):
-            return path
-    existing = [p for p in candidates if os.path.exists(p)]
-    if existing:
-        raise RuntimeError(
-            "Existe .pyc legado, mas ele nao e compativel com este Python. "
-            f"Python atual={sys.version_info.major}.{sys.version_info.minor}; arquivos encontrados={existing}"
-        )
-    raise FileNotFoundError(f"Arquivo .pyc nao encontrado. Procurado em: {candidates}")
 
 
 def _pyc_magic_is_compatible(path: str) -> bool:
     try:
         with open(path, "rb") as fp:
             return fp.read(4) == importlib.util.MAGIC_NUMBER
-    except Exception:
+    except OSError:
         return False
+
+
+def pyc_compatibility_report(module_file: str) -> dict:
+    candidates = _candidate_pyc_paths(module_file)
+    existing = [p for p in candidates if os.path.exists(p)]
+    compatible = [p for p in existing if _pyc_magic_is_compatible(p)]
+    return {
+        "python": f"{sys.version_info.major}.{sys.version_info.minor}",
+        "magic_number": importlib.util.MAGIC_NUMBER.hex(),
+        "candidates": candidates,
+        "existing": existing,
+        "compatible": compatible,
+        "ok": bool(compatible),
+    }
+
+
+def _pyc_path_for(module_file: str) -> str:
+    report = pyc_compatibility_report(module_file)
+    compatible = report["compatible"]
+    if compatible:
+        return compatible[0]
+    existing = report["existing"]
+    if existing:
+        raise LegacyPycCompatibilityError(
+            "Existe .pyc legado, mas ele nao e compativel com este Python. "
+            f"relatorio={json.dumps(report, ensure_ascii=False)}"
+        )
+    raise LegacyPycNotFoundError(
+        "Arquivo .pyc nao encontrado. "
+        f"relatorio={json.dumps(report, ensure_ascii=False)}"
+    )
 
 
 def _ensure_package_alias(package_name: str, package_dir: str) -> None:
@@ -101,3 +130,33 @@ def export_module_namespace(target_globals: dict, module: ModuleType) -> None:
         if key in protected:
             continue
         target_globals[key] = value
+
+
+def _env_flag(name: str, default: str = "1") -> bool:
+    return str(os.getenv(name, default)).strip().lower() not in {"0", "false", "nao", "não", "no", "off"}
+
+
+def run_smart_fallback_for_wrapper(module_file: str, original_error: BaseException) -> int:
+    """Usado quando alguém executa `FONTE.py` direto e o .pyc legado é incompatível.
+
+    O `Edital.py` normalmente já pula o legado incompatível antes de chamar o subprocesso.
+    Esta função protege o uso manual dos wrappers para não quebrar seco.
+    """
+    script = os.path.basename(module_file)
+    fonte = os.path.splitext(script)[0]
+    persist = _env_flag("SMART_WRAPPER_PERSIST", os.getenv("SMART_PERSIST_ON_WRAPPER", "1"))
+    print(
+        f"[LEGADO] {script} nao carregou bytecode legado: {original_error}",
+        file=sys.stderr,
+    )
+    print("[SMART-WRAPPER-FALLBACK] acionando fallback inteligente", file=sys.stderr)
+    try:
+        try:
+            from .smart_fallback import run  # type: ignore
+        except Exception:
+            from smart_fallback import run  # type: ignore
+        summary = run(script=script, fonte=fonte, persist=persist)
+        return 0 if summary.get("ok") else 2
+    except Exception as fallback_error:
+        print(f"[SMART-WRAPPER-FALLBACK-ERRO] {fallback_error}", file=sys.stderr)
+        return 2

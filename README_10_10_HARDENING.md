@@ -185,3 +185,97 @@ Adicionados:
 ## Nota honesta
 
 Isso deixa o projeto muito mais perto de um scraping 10/10, mas scraping literalmente 100% imortal não existe. O que existe é: fallback, auditoria, teste, detecção por múltiplas estratégias e falha explícita. Agora o projeto está bem mais nessa pegada.
+
+## Segunda rodada de hardening aplicada
+
+### 8. `run_tests.py` e `health_check.py` não entram mais no ciclo
+
+O executor principal agora ignora explicitamente arquivos internos de manutenção. Isso evita que o robô tente executar teste/sanidade como se fosse fonte de edital.
+
+Arquivos ignorados adicionados:
+
+```text
+run_tests.py
+health_check.py
+```
+
+### 9. Timeout por scraper e por fallback
+
+Nenhum scraper legado ou fallback inteligente deve conseguir travar o ciclo inteiro indefinidamente.
+
+Variáveis novas:
+
+```env
+SCRAPER_SUBPROCESS_TIMEOUT_SECONDS=900
+SMART_FALLBACK_TIMEOUT_SECONDS=900
+```
+
+Se um subprocesso estourar o tempo, ele retorna erro controlado `124` com `[TIMEOUT]` no log, em vez de congelar o agendador.
+
+### 10. `.pyc` legado incompatível não derruba mais a execução
+
+Os wrappers continuam preservados, mas agora o `Edital.py` detecta quando o `.pyc` existente não é compatível com o Python atual e pula o legado diretamente para o fallback inteligente.
+
+Variável nova:
+
+```env
+SKIP_INCOMPATIBLE_LEGACY_PYC=1
+```
+
+Isso é importante porque os bytecodes originais são `cpython-311`. Em Python 3.12, 3.13 ou 3.14 eles não carregam. Antes isso virava erro seco; agora vira fallback auditável.
+
+### 11. Wrappers protegidos para execução manual
+
+Se alguém rodar diretamente:
+
+```bash
+python FINEP.py
+```
+
+e o `.pyc` não for compatível, o wrapper aciona `smart_fallback.py` sozinho em vez de quebrar com traceback inútil.
+
+### 12. Dependências pesadas viraram opcionais para smoke test
+
+`utils.py` agora importa com tolerância quando o ambiente ainda não tem todas as dependências instaladas, como:
+
+- `PyPDF2`
+- `pyodbc`
+- `pytesseract`
+- `openai`
+- `pdf2image`
+
+As funcionalidades que precisam delas continuam exigindo instalação, mas import/teste/local health check não quebram só porque o ambiente ainda não está completo.
+
+### 13. `health_check.py`
+
+Novo comando local:
+
+```bash
+python health_check.py
+python health_check.py --json
+```
+
+Ele valida:
+
+- arquivos internos fora da lista de scrapers;
+- wrappers com fallback inteligente;
+- cobertura do `smart_sources.json`;
+- compatibilidade dos `.pyc` com o Python atual;
+- variáveis recomendadas no `.env.example`.
+
+### 14. Mais testes automatizados
+
+A suíte agora também valida:
+
+- arquivos internos não executados como scraper;
+- timeout controlado de subprocesso;
+- relatório estruturado de compatibilidade `.pyc`;
+- wrappers com fallback direto.
+
+Rodar:
+
+```bash
+python run_tests.py
+```
+
+Resultado esperado nesta versão: **10 testes OK**.

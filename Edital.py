@@ -6,6 +6,7 @@ import re
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 
 try:
     from zoneinfo import ZoneInfo
@@ -43,6 +44,8 @@ IGNORAR = {
     "source_registry.py",
     "smart_crawler.py",
     "smart_fallback.py",
+    "run_tests.py",
+    "health_check.py",
 }
 
 SCRIPTS = sorted(
@@ -111,6 +114,104 @@ def _env_flag(name: str, default: str = "1") -> bool:
     return str(os.getenv(name, default)).strip().lower() not in {"0", "false", "nao", "não", "no", "off"}
 
 
+
+
+def _env_int(name: str, default: int, minimum: int = 1, maximum: int | None = None) -> int:
+    try:
+        value = int(str(os.getenv(name, str(default))).strip())
+    except Exception:
+        value = default
+    value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
+SCRAPER_SUBPROCESS_TIMEOUT_SECONDS = _env_int("SCRAPER_SUBPROCESS_TIMEOUT_SECONDS", 900, minimum=30)
+SMART_FALLBACK_TIMEOUT_SECONDS = _env_int("SMART_FALLBACK_TIMEOUT_SECONDS", 900, minimum=30)
+SKIP_INCOMPATIBLE_LEGACY_PYC = _env_flag("SKIP_INCOMPATIBLE_LEGACY_PYC", "1") if "_env_flag" in globals() else True
+
+
+def _decode_subprocess_output(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def _run_subprocess(cmd: list[str], *, cwd: str, env: dict, timeout_seconds: int) -> SimpleNamespace:
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=cwd,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+            timeout=timeout_seconds,
+        )
+        return SimpleNamespace(
+            stdout=result.stdout or "",
+            stderr=result.stderr or "",
+            returncode=result.returncode,
+            timed_out=False,
+            skipped_legacy=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = _decode_subprocess_output(exc.stdout)
+        stderr = _decode_subprocess_output(exc.stderr)
+        msg = f"[TIMEOUT] Processo encerrado apos {timeout_seconds}s: {' '.join(cmd)}"
+        if stderr:
+            stderr += "\n"
+        stderr += msg
+        return SimpleNamespace(stdout=stdout, stderr=stderr, returncode=124, timed_out=True, skipped_legacy=False)
+
+
+def _is_pyc_wrapper(arquivo: str) -> bool:
+    path = os.path.join(PROJETO_DIR, arquivo)
+    try:
+        with open(path, "r", encoding="utf-8") as fp:
+            head = fp.read(1200)
+        return "load_module_from_pyc" in head and "export_module_namespace" in head
+    except Exception:
+        return False
+
+
+def _legacy_pyc_status(arquivo: str) -> dict:
+    path = os.path.join(PROJETO_DIR, arquivo)
+    if not _is_pyc_wrapper(arquivo):
+        return {"wrapper": False, "compatible": True, "existing": [], "compatible_paths": []}
+    try:
+        try:
+            from . import _pyc_bridge as bridge  # type: ignore
+        except Exception:
+            import _pyc_bridge as bridge  # type: ignore
+        candidates = bridge._candidate_pyc_paths(path)  # noqa: SLF001 - uso intencional para diagnostico local
+        existing = [p for p in candidates if os.path.exists(p)]
+        compatible_paths = [p for p in existing if bridge._pyc_magic_is_compatible(p)]  # noqa: SLF001
+        return {
+            "wrapper": True,
+            "compatible": bool(compatible_paths),
+            "existing": existing,
+            "compatible_paths": compatible_paths,
+        }
+    except Exception as exc:
+        return {"wrapper": True, "compatible": False, "existing": [], "compatible_paths": [], "error": str(exc)}
+
+
+def _skipped_legacy_result(arquivo: str, status: dict) -> SimpleNamespace:
+    existing = ", ".join(status.get("existing") or []) or "nenhum .pyc encontrado"
+    stderr = (
+        f"[LEGADO-SKIP] {arquivo}: wrapper .pyc sem bytecode compativel com Python "
+        f"{sys.version_info.major}.{sys.version_info.minor}. Arquivos: {existing}. "
+        "Fallback inteligente sera usado no lugar do legado."
+    )
+    return SimpleNamespace(stdout="", stderr=stderr, returncode=126, timed_out=False, skipped_legacy=True)
+
+
 def _smart_fallback_enabled() -> bool:
     return _env_flag("ENABLE_SMART_FALLBACK", "1")
 
@@ -145,15 +246,11 @@ def _executar_smart_fallback(arquivo: str, fonte_label: str) -> dict:
         env_exec = os.environ.copy()
         env_exec.setdefault("PYTHONUTF8", "1")
         env_exec.setdefault("PYTHONIOENCODING", "utf-8")
-        result = subprocess.run(
+        result = _run_subprocess(
             cmd,
             cwd=PROJETO_DIR,
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             env=env_exec,
+            timeout_seconds=SMART_FALLBACK_TIMEOUT_SECONDS,
         )
         summary = _extract_smart_summary(result.stdout or "")
         if not summary:
@@ -216,6 +313,8 @@ def _criar_log_inicio_ciclo(nome_ciclo: str, instante_inicio: datetime.datetime 
             fp.write(f"timezone: {TZ_NAME if _TZ else 'local'}\n")
             fp.write(f"scripts_detectados: {TOTAL_SCRIPTS}\n")
             fp.write(f"fontes_total_config: {FONTES_TOTAL_DIARIAS}\n")
+            fp.write(f"timeout_scraper_segundos: {SCRAPER_SUBPROCESS_TIMEOUT_SECONDS}\n")
+            fp.write(f"timeout_smart_fallback_segundos: {SMART_FALLBACK_TIMEOUT_SECONDS}\n")
         return path
     except Exception as exc:
         utils.print_error(f"Falha ao criar log de inicio do ciclo: {exc}")
@@ -424,16 +523,16 @@ def executar_ciclo(nome_ciclo: str = "Manual") -> None:
             env_exec.setdefault("PYTHONUTF8", "1")
             env_exec.setdefault("PYTHONIOENCODING", "utf-8")
 
-            run_result = subprocess.run(
-                cmd,
-                cwd=os.path.dirname(PROJETO_DIR),
-                check=False,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                env=env_exec,
-            )
+            pyc_status = _legacy_pyc_status(arquivo)
+            if SKIP_INCOMPATIBLE_LEGACY_PYC and pyc_status.get("wrapper") and not pyc_status.get("compatible"):
+                run_result = _skipped_legacy_result(arquivo, pyc_status)
+            else:
+                run_result = _run_subprocess(
+                    cmd,
+                    cwd=os.path.dirname(PROJETO_DIR),
+                    env=env_exec,
+                    timeout_seconds=SCRAPER_SUBPROCESS_TIMEOUT_SECONDS,
+                )
 
             motivo_legacy = _extract_error_reason(
                 run_result.stdout or "",
@@ -452,12 +551,17 @@ def executar_ciclo(nome_ciclo: str = "Manual") -> None:
 
             smart_summary = smart_result.get("summary") if isinstance(smart_result, dict) else {}
             smart_persisted = int((smart_summary or {}).get("persisted") or 0) if isinstance(smart_summary, dict) else 0
+            smart_ok = bool((smart_summary or {}).get("ok")) if isinstance(smart_summary, dict) else False
             smart_error = str((smart_summary or {}).get("error") or "").strip() if isinstance(smart_summary, dict) else ""
 
-            if motivo_legacy and smart_persisted > 0:
+            if motivo_legacy and smart_ok:
                 status_execucao = "sucesso_com_fallback"
                 motivo_falha = None
-                motivo_observacao = f"Legado falhou, mas SMART persistiu {smart_persisted} candidato(s). Falha legado: {motivo_legacy}"
+                motivo_observacao = (
+                    f"Legado falhou/pulado, mas SMART processou a fonte "
+                    f"(persistidos={smart_persisted}, candidatos={(smart_summary or {}).get('candidates', 0)}, "
+                    f"paginas={(smart_summary or {}).get('pages_fetched', 0)}). Falha legado: {motivo_legacy}"
+                )
             elif motivo_legacy:
                 status_execucao = "erro"
                 motivo_falha = motivo_legacy
@@ -489,6 +593,8 @@ def executar_ciclo(nome_ciclo: str = "Manual") -> None:
                 "motivo_falha": motivo_falha or None,
                 "observacao": motivo_observacao,
                 "return_code": run_result.returncode,
+                "timed_out": bool(getattr(run_result, "timed_out", False)),
+                "skipped_legacy": bool(getattr(run_result, "skipped_legacy", False)),
                 "smart_fallback": smart_summary,
                 "smart_return_code": smart_result.get("returncode"),
                 "tempo_inicio": str(inicio_script),
