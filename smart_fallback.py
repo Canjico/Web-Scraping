@@ -13,6 +13,66 @@ except Exception:  # pragma: no cover
     from smart_crawler import SmartCrawler, persist_report, report_to_dict, utils  # type: ignore
 
 
+def _env_flag(name: str, default: str = "0") -> bool:
+    return str(os.getenv(name, default)).strip().lower() not in {"0", "false", "nao", "não", "no", "off", ""}
+
+
+def _env_int(name: str, default: int, minimum: int = 1, maximum: int | None = None) -> int:
+    try:
+        value = int(str(os.getenv(name, str(default))).strip())
+    except Exception:
+        value = default
+    value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
+def _clip(value: object, limit: int = 260) -> str:
+    text = " ".join(str(value or "").split())
+    return text if len(text) <= limit else text[: max(0, limit - 3)] + "..."
+
+
+def _verbose_enabled() -> bool:
+    return _env_flag("SMART_VERBOSE_LOG", "0")
+
+
+def _verbose(msg: str) -> None:
+    if _verbose_enabled():
+        utils.print_info(f"[SMART-DETALHE] {msg}")
+
+
+def _emit_report_details(report) -> None:
+    if not _verbose_enabled():
+        return
+    max_candidates = _env_int("SMART_VERBOSE_MAX_CANDIDATES", 20, minimum=1, maximum=200)
+    max_docs = _env_int("SMART_VERBOSE_MAX_DOCS_PER_CANDIDATE", 8, minimum=1, maximum=100)
+    utils.print_info(
+        "[SMART-DETALHE] "
+        f"fonte={report.source} | paginas_lidas={report.pages_fetched} | "
+        f"paginas_falhas={report.pages_failed} | links={report.links_seen} | "
+        f"documentos={report.documents_seen} | candidatos={len(report.candidates)}"
+    )
+    for warning in (report.warnings or [])[:20]:
+        utils.print_info(f"[SMART-DETALHE] warning={_clip(warning, 700)}")
+    for idx, cand in enumerate(report.candidates[:max_candidates], start=1):
+        utils.print_info(
+            "[SMART-CANDIDATO] "
+            f"#{idx} | conf={cand.confidence:.3f} | score={cand.score:.3f} | "
+            f"kind={cand.kind} | status_hint={cand.status_hint} | docs={len(cand.documents)} | "
+            f"titulo={_clip(cand.title, 220)}"
+        )
+        utils.print_info(f"[SMART-CANDIDATO] #{idx} url={cand.url}")
+        if cand.reasons:
+            utils.print_info(f"[SMART-CANDIDATO] #{idx} motivos={_clip('; '.join(cand.reasons), 700)}")
+        for doc_i, doc in enumerate(cand.documents[:max_docs], start=1):
+            utils.print_info(
+                "[SMART-DOCUMENTO] "
+                f"cand=#{idx} doc={doc_i}/{len(cand.documents)} | conf={doc.confidence:.3f} | "
+                f"tipo={doc.content_type or '-'} | titulo={_clip(doc.title or doc.text or doc.url, 180)} | url={doc.url}"
+            )
+
+
 def _build_inline_source(name: str, url: str) -> SourceConfig:
     from urllib.parse import urlparse
     host = urlparse(url).netloc.lower()
@@ -31,6 +91,7 @@ def run(script: str = "", fonte: str = "", url: str = "", persist: bool = False)
     utils.print_info(f"[SMART] Iniciando fallback inteligente para {source.name} ({', '.join(source.start_urls)})")
     crawler = SmartCrawler(source)
     report = crawler.crawl()
+    _emit_report_details(report)
     payload = report_to_dict(report)
     ok = report.pages_fetched > 0 or len(report.candidates) > 0 or report.documents_seen > 0
     status = "ok" if ok else "fonte_nao_capturada"
@@ -57,7 +118,24 @@ def run(script: str = "", fonte: str = "", url: str = "", persist: bool = False)
             "skipped": persisted.get("skipped", 0),
             "ids": persisted.get("ids", []),
             "errors": persisted.get("errors", []),
+            "persisted_details": persisted.get("persisted_details", []),
+            "skipped_details": persisted.get("skipped_details", []),
         })
+        if _verbose_enabled():
+            utils.print_info(
+                f"[SMART-PERSISTENCIA] persistidos={summary.get('persisted', 0)} | "
+                f"pulados={summary.get('skipped', 0)} | erros={len(summary.get('errors') or [])}"
+            )
+            for item in summary.get("persisted_details", [])[:20]:
+                utils.print_info(
+                    f"[SMART-PERSISTIDO] id={item.get('id')} | conf={item.get('confidence')} | "
+                    f"docs={item.get('documents')} | titulo={_clip(item.get('title'), 220)} | url={item.get('url')}"
+                )
+            for item in summary.get("skipped_details", [])[:20]:
+                utils.print_info(
+                    f"[SMART-PULADO] motivo={item.get('reason')} | conf={item.get('confidence')} | "
+                    f"status={item.get('status_hint')} | titulo={_clip(item.get('title'), 220)} | url={item.get('url')}"
+                )
 
     # Arquivo de auditoria local para investigar por que uma fonte capturou ou nao capturou algo.
     try:

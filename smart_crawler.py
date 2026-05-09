@@ -818,16 +818,34 @@ def persist_report(report: CrawlReport, *, use_ia: bool = True, max_candidates: 
         "skipped": 0,
         "errors": [],
         "ids": [],
+        "persisted_details": [],
+        "skipped_details": [],
     }
     limit = max_candidates or int(os.getenv("SMART_PERSIST_MAX_CANDIDATES", "25"))
     for cand in report.candidates[:limit]:
         try:
             if cand.confidence < float(os.getenv("SMART_PERSIST_MIN_CONFIDENCE", "0.66")):
                 summary["skipped"] += 1
+                summary["skipped_details"].append({
+                    "reason": "confidence_below_threshold",
+                    "title": cand.title,
+                    "url": cand.url,
+                    "confidence": cand.confidence,
+                    "score": cand.score,
+                    "status_hint": cand.status_hint,
+                })
                 continue
             # Segurança anti-spam: se parece encerrado e nao tem data futura, nao persiste automaticamente.
             if cand.status_hint == "encerrado" and os.getenv("SMART_PERSIST_CLOSED", "0") != "1":
                 summary["skipped"] += 1
+                summary["skipped_details"].append({
+                    "reason": "closed_candidate_blocked",
+                    "title": cand.title,
+                    "url": cand.url,
+                    "confidence": cand.confidence,
+                    "score": cand.score,
+                    "status_hint": cand.status_hint,
+                })
                 continue
             edital_id = utils.obter_ou_criar_edital(
                 titulo=cand.title,
@@ -837,6 +855,14 @@ def persist_report(report: CrawlReport, *, use_ia: bool = True, max_candidates: 
             )
             if not edital_id or edital_id == -1:
                 summary["skipped"] += 1
+                summary["skipped_details"].append({
+                    "reason": "db_insert_or_lookup_failed",
+                    "title": cand.title,
+                    "url": cand.url,
+                    "confidence": cand.confidence,
+                    "score": cand.score,
+                    "status_hint": cand.status_hint,
+                })
                 continue
 
             arquivos_json: list[dict[str, Any]] = []
@@ -865,8 +891,26 @@ def persist_report(report: CrawlReport, *, use_ia: bool = True, max_candidates: 
             utils.atualizar_edital_ia(edital_id, dados, link_origem=cand.url)
             summary["persisted"] += 1
             summary["ids"].append(edital_id)
+            summary["persisted_details"].append({
+                "id": edital_id,
+                "title": cand.title,
+                "url": cand.url,
+                "confidence": cand.confidence,
+                "score": cand.score,
+                "status_hint": cand.status_hint,
+                "kind": cand.kind,
+                "documents": len(cand.documents),
+            })
         except Exception as exc:
             summary["errors"].append(f"{cand.url}: {exc}")
+            summary["skipped_details"].append({
+                "reason": f"exception: {exc}",
+                "title": cand.title,
+                "url": cand.url,
+                "confidence": cand.confidence,
+                "score": cand.score,
+                "status_hint": cand.status_hint,
+            })
     return summary
 
 

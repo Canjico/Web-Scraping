@@ -6,6 +6,7 @@ import re
 import subprocess
 import sys
 import time
+import threading
 from types import SimpleNamespace
 
 try:
@@ -215,6 +216,21 @@ SCRAPER_SUBPROCESS_TIMEOUT_SECONDS = _env_int("SCRAPER_SUBPROCESS_TIMEOUT_SECOND
 SMART_FALLBACK_TIMEOUT_SECONDS = _env_int("SMART_FALLBACK_TIMEOUT_SECONDS", 900, minimum=30)
 SKIP_INCOMPATIBLE_LEGACY_PYC = _env_flag("SKIP_INCOMPATIBLE_LEGACY_PYC", "1") if "_env_flag" in globals() else True
 
+# Logs de execucao em tempo real.
+# - SCRAPER_LOG_TO_CONSOLE=1: imprime resumo humano no terminal.
+# - SCRAPER_LOG_VERBOSE=1: imprime detalhes por edital/candidato.
+# - SCRAPER_STREAM_SUBPROCESS=1: espelha stdout/stderr dos subprocessos enquanto eles rodam.
+SCRAPER_LOG_TO_CONSOLE = _env_flag("SCRAPER_LOG_TO_CONSOLE", "1")
+SCRAPER_LOG_VERBOSE = _env_flag("SCRAPER_LOG_VERBOSE", "0")
+SCRAPER_STREAM_SUBPROCESS = _env_flag("SCRAPER_STREAM_SUBPROCESS", "0")
+SCRAPER_CONSOLE_SHOW_STDOUT_TAIL = _env_flag("SCRAPER_CONSOLE_SHOW_STDOUT_TAIL", "0")
+SCRAPER_CONSOLE_OUTPUT_CHARS = _env_int("SCRAPER_CONSOLE_OUTPUT_CHARS", 8000, minimum=500, maximum=200000)
+SCRAPER_FILE_STDOUT_CHARS = _env_int("SCRAPER_FILE_STDOUT_CHARS", 50000, minimum=1200, maximum=500000)
+SCRAPER_FILE_STDERR_CHARS = _env_int("SCRAPER_FILE_STDERR_CHARS", 50000, minimum=1200, maximum=500000)
+SCRAPER_AUDIT_STDOUT_CHARS = _env_int("SCRAPER_AUDIT_STDOUT_CHARS", 12000, minimum=1200, maximum=200000)
+SCRAPER_AUDIT_STDERR_CHARS = _env_int("SCRAPER_AUDIT_STDERR_CHARS", 12000, minimum=1200, maximum=200000)
+SCRAPER_CONSOLE_MAX_EDITAIS = _env_int("SCRAPER_CONSOLE_MAX_EDITAIS", 50, minimum=1, maximum=500)
+
 
 def _decode_subprocess_output(value) -> str:
     if value is None:
@@ -225,34 +241,102 @@ def _decode_subprocess_output(value) -> str:
 
 
 def _run_subprocess(cmd: list[str], *, cwd: str, env: dict, timeout_seconds: int) -> SimpleNamespace:
+    """Executa subprocesso com timeout e, opcionalmente, streaming em tempo real.
+
+    O modo streaming evita a sensacao de "terminal congelado" durante fontes lentas e
+    ainda preserva stdout/stderr para auditoria e log em arquivo.
+    """
+    if not SCRAPER_STREAM_SUBPROCESS:
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=cwd,
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=env,
+                timeout=timeout_seconds,
+            )
+            return SimpleNamespace(
+                stdout=result.stdout or "",
+                stderr=result.stderr or "",
+                returncode=result.returncode,
+                timed_out=False,
+                skipped_legacy=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            stdout = _decode_subprocess_output(exc.stdout)
+            stderr = _decode_subprocess_output(exc.stderr)
+            msg = f"[TIMEOUT] Processo encerrado apos {timeout_seconds}s: {' '.join(cmd)}"
+            if stderr:
+                stderr += "\n"
+            stderr += msg
+            return SimpleNamespace(stdout=stdout, stderr=stderr, returncode=124, timed_out=True, skipped_legacy=False)
+
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+    proc = None
+
+    def _reader(stream, collector: list[str], is_err: bool) -> None:
+        try:
+            for line in iter(stream.readline, ""):
+                if not line:
+                    break
+                collector.append(line)
+                # Mantem a linha original, mas com prefixo para ficar rastreavel no terminal.
+                prefix = "[SUBPROCESS-ERR]" if is_err else "[SUBPROCESS]"
+                if is_err:
+                    utils.print_error(f"{prefix} {line.rstrip()}")
+                else:
+                    utils.print_info(f"{prefix} {line.rstrip()}")
+        except Exception as exc:
+            collector.append(f"[STREAM-ERROR] {exc}\n")
+
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
             cwd=cwd,
-            check=False,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
             env=env,
-            timeout=timeout_seconds,
         )
+        threads = [
+            threading.Thread(target=_reader, args=(proc.stdout, stdout_lines, False), daemon=True),
+            threading.Thread(target=_reader, args=(proc.stderr, stderr_lines, True), daemon=True),
+        ]
+        for t in threads:
+            t.start()
+        try:
+            return_code = proc.wait(timeout=timeout_seconds)
+            timed_out = False
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            proc.kill()
+            return_code = 124
+            msg = f"[TIMEOUT] Processo encerrado apos {timeout_seconds}s: {' '.join(cmd)}\n"
+            stderr_lines.append(msg)
+            utils.print_error(msg.rstrip())
+        for t in threads:
+            t.join(timeout=2)
         return SimpleNamespace(
-            stdout=result.stdout or "",
-            stderr=result.stderr or "",
-            returncode=result.returncode,
-            timed_out=False,
+            stdout="".join(stdout_lines),
+            stderr="".join(stderr_lines),
+            returncode=return_code,
+            timed_out=timed_out,
             skipped_legacy=False,
         )
-    except subprocess.TimeoutExpired as exc:
-        stdout = _decode_subprocess_output(exc.stdout)
-        stderr = _decode_subprocess_output(exc.stderr)
-        msg = f"[TIMEOUT] Processo encerrado apos {timeout_seconds}s: {' '.join(cmd)}"
-        if stderr:
-            stderr += "\n"
-        stderr += msg
-        return SimpleNamespace(stdout=stdout, stderr=stderr, returncode=124, timed_out=True, skipped_legacy=False)
-
+    except Exception as exc:
+        if proc is not None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        return SimpleNamespace(stdout="".join(stdout_lines), stderr=str(exc), returncode=125, timed_out=False, skipped_legacy=False)
 
 def _is_pyc_wrapper(arquivo: str) -> bool:
     path = os.path.join(PROJETO_DIR, arquivo)
@@ -465,15 +549,23 @@ def _resumo_aprovacao_editais(editais: list[dict]) -> dict:
         if web_check.get("divergencia_status") is True:
             divergencias_web_check += 1
 
+        smart_meta = data.get("smart_crawler") if isinstance(data.get("smart_crawler"), dict) else {}
         amostra.append(
             {
                 "id": item.get("id"),
-                "titulo": str(item.get("titulo") or "").strip(),
+                "titulo": str(item.get("titulo") or data.get("titulo") or "").strip(),
                 "ia": status_ia,
                 "motivo_ia": str(data.get("motivo_aprovacao") or "").strip(),
-                "status_final": str(web_check.get("status_final") or "").strip(),
+                "status_final": str(web_check.get("status_final") or data.get("status_detectado") or "").strip(),
                 "fonte_status_final": str(web_check.get("fonte_decisao_final") or "").strip(),
                 "divergencia_web_check": bool(web_check.get("divergencia_status")),
+                "prazo": str(data.get("data_final_submissao") or data.get("prazo_final") or data.get("data_fim") or "").strip(),
+                "confianca": data.get("confianca_captura") if data.get("confianca_captura") is not None else smart_meta.get("confidence"),
+                "score": smart_meta.get("score"),
+                "documentos_detectados": smart_meta.get("documentos_detectados"),
+                "link_original": _extract_original_link(item),
+                "link_painel": _build_frontend_link(item.get("id")),
+                "descricao": str(data.get("descricao") or "").strip(),
             }
         )
 
@@ -484,6 +576,101 @@ def _resumo_aprovacao_editais(editais: list[dict]) -> dict:
         "divergencias_web_check": divergencias_web_check,
         "amostra": amostra,
     }
+
+
+def _clip_console(value, limit: int = 240) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if limit and len(text) > limit:
+        return text[: max(0, limit - 3)] + "..."
+    return text
+
+
+def _format_metric(value) -> str:
+    if value in (None, ""):
+        return "-"
+    if isinstance(value, float):
+        return f"{value:.3f}"
+    return str(value)
+
+
+def _console_log_smart_summary(fonte_label: str, smart_summary: dict) -> None:
+    if not SCRAPER_LOG_TO_CONSOLE or not isinstance(smart_summary, dict) or not smart_summary:
+        return
+    utils.print_info(
+        "[SMART-RESUMO] "
+        f"fonte={fonte_label} | ok={smart_summary.get('ok')} | "
+        f"paginas={smart_summary.get('pages_fetched', 0)} | falhas={smart_summary.get('pages_failed', 0)} | "
+        f"links={smart_summary.get('links_seen', 0)} | docs={smart_summary.get('documents_seen', 0)} | "
+        f"candidatos={smart_summary.get('candidates', 0)} | persistidos={smart_summary.get('persisted', 0)} | "
+        f"pulados={smart_summary.get('skipped', 0)}"
+    )
+    if smart_summary.get("warnings") and SCRAPER_LOG_VERBOSE:
+        for warning in smart_summary.get("warnings", [])[:8]:
+            utils.print_info(f"[SMART-WARNING] {fonte_label}: {_clip_console(warning, 500)}")
+    if smart_summary.get("errors"):
+        for error in smart_summary.get("errors", [])[:8]:
+            utils.print_error(f"[SMART-ERRO] {fonte_label}: {_clip_console(error, 600)}")
+
+
+def _escrever_console_script(
+    *,
+    indice: int,
+    arquivo: str,
+    fonte_label: str,
+    status_execucao: str,
+    motivo_falha: str | None,
+    return_code: int | None,
+    novos_script: list[dict],
+    smart_summary: dict,
+    stdout_tail: str,
+    stderr_tail: str,
+) -> None:
+    if not SCRAPER_LOG_TO_CONSOLE:
+        return
+
+    resumo = _resumo_aprovacao_editais(novos_script or [])
+    utils.print_section(f"RESUMO DA FONTE {indice}/{TOTAL_SCRIPTS}: {fonte_label}")
+    if status_execucao in {"sucesso", "sucesso_com_fallback"}:
+        utils.print_success(
+            f"{arquivo} | status={status_execucao} | return_code={return_code} | "
+            f"novos={len(novos_script or [])} | aprovados_ia={resumo['aprovados']} | "
+            f"reprovados_ia={resumo['reprovados']} | incertos_ia={resumo['incertos']} | "
+            f"divergencias_web_check={resumo['divergencias_web_check']}"
+        )
+    else:
+        utils.print_error(
+            f"{arquivo} | status={status_execucao} | return_code={return_code} | motivo={motivo_falha or '-'}"
+        )
+
+    _console_log_smart_summary(fonte_label, smart_summary if isinstance(smart_summary, dict) else {})
+
+    if resumo["amostra"]:
+        utils.print_info(f"[EDITAIS-COLETADOS] Mostrando ate {min(SCRAPER_CONSOLE_MAX_EDITAIS, len(resumo['amostra']))}/{len(resumo['amostra'])}")
+        for edital in resumo["amostra"][:SCRAPER_CONSOLE_MAX_EDITAIS]:
+            utils.print_info(
+                "[EDITAL] "
+                f"id={edital.get('id')} | ia={edital.get('ia')} | "
+                f"status_final={edital.get('status_final') or '-'} | "
+                f"prazo={edital.get('prazo') or '-'} | "
+                f"confianca={_format_metric(edital.get('confianca'))} | "
+                f"docs={_format_metric(edital.get('documentos_detectados'))} | "
+                f"titulo={_clip_console(edital.get('titulo'), 220)}"
+            )
+            if edital.get("link_original"):
+                utils.print_info(f"  link_original: {edital.get('link_original')}")
+            if edital.get("link_painel"):
+                utils.print_info(f"  link_painel: {edital.get('link_painel')}")
+            if edital.get("motivo_ia"):
+                utils.print_info(f"  motivo_ia: {_clip_console(edital.get('motivo_ia'), 500)}")
+            if SCRAPER_LOG_VERBOSE and edital.get("descricao"):
+                utils.print_info(f"  descricao: {_clip_console(edital.get('descricao'), 700)}")
+    else:
+        utils.print_info("[EDITAIS-COLETADOS] Nenhum edital novo salvo nessa fonte.")
+
+    if SCRAPER_CONSOLE_SHOW_STDOUT_TAIL and stdout_tail:
+        utils.print_info("[STDOUT-TAIL]\n" + stdout_tail[-SCRAPER_CONSOLE_OUTPUT_CHARS:])
+    if stderr_tail and (SCRAPER_LOG_VERBOSE or status_execucao == "erro"):
+        utils.print_error("[STDERR-TAIL]\n" + stderr_tail[-SCRAPER_CONSOLE_OUTPUT_CHARS:])
 
 
 def _escrever_log_script(
@@ -533,18 +720,27 @@ def _escrever_log_script(
                     f"divergencia_web_check={edital.get('divergencia_web_check')} | "
                     f"status_final={edital.get('status_final') or '-'} | "
                     f"fonte_final={edital.get('fonte_status_final') or '-'} | "
+                    f"prazo={edital.get('prazo') or '-'} | "
+                    f"confianca={_format_metric(edital.get('confianca'))} | "
+                    f"docs={_format_metric(edital.get('documentos_detectados'))} | "
                     f"titulo={edital.get('titulo')}"
                 ),
             )
+            if edital.get("link_original"):
+                _append_log_txt(caminho_log, f"  link_original: {edital.get('link_original')}")
+            if edital.get("link_painel"):
+                _append_log_txt(caminho_log, f"  link_painel: {edital.get('link_painel')}")
             if edital.get("motivo_ia"):
                 _append_log_txt(caminho_log, f"  motivo_ia: {edital.get('motivo_ia')}")
+            if edital.get("descricao"):
+                _append_log_txt(caminho_log, f"  descricao: {_clip_console(edital.get('descricao'), 700)}")
 
     if stdout_tail:
         _append_log_txt(caminho_log, "\nstdout_tail:")
-        _append_log_txt(caminho_log, stdout_tail[-1200:])
+        _append_log_txt(caminho_log, stdout_tail[-SCRAPER_FILE_STDOUT_CHARS:])
     if stderr_tail:
         _append_log_txt(caminho_log, "\nstderr_tail:")
-        _append_log_txt(caminho_log, stderr_tail[-1200:])
+        _append_log_txt(caminho_log, stderr_tail[-SCRAPER_FILE_STDERR_CHARS:])
 
 
 def _escrever_log_fim_ciclo(
@@ -688,8 +884,8 @@ def executar_ciclo(nome_ciclo: str = "Manual") -> None:
                     _build_new_edital_summary(e)
                     for e in novos_script[:30]
                 ],
-                "stdout_tail": stdout_completo[-1200:],
-                "stderr_tail": stderr_completo[-1200:],
+                "stdout_tail": stdout_completo[-SCRAPER_AUDIT_STDOUT_CHARS:],
+                "stderr_tail": stderr_completo[-SCRAPER_AUDIT_STDERR_CHARS:],
                 "fonte_index": i,
                 "fontes_total_implementadas": TOTAL_SCRIPTS,
                 "fontes_total_config": FONTES_TOTAL_DIARIAS,
@@ -708,6 +904,18 @@ def executar_ciclo(nome_ciclo: str = "Manual") -> None:
                 motivo_falha=motivo_falha or None,
                 return_code=run_result.returncode,
                 novos_script=novos_script,
+                stdout_tail=stdout_completo,
+                stderr_tail=stderr_completo,
+            )
+            _escrever_console_script(
+                indice=i,
+                arquivo=arquivo,
+                fonte_label=fonte_label,
+                status_execucao=status_execucao,
+                motivo_falha=motivo_falha or None,
+                return_code=run_result.returncode,
+                novos_script=novos_script,
+                smart_summary=smart_summary if isinstance(smart_summary, dict) else {},
                 stdout_tail=stdout_completo,
                 stderr_tail=stderr_completo,
             )
@@ -751,6 +959,18 @@ def executar_ciclo(nome_ciclo: str = "Manual") -> None:
                 motivo_falha=motivo_falha,
                 return_code=None,
                 novos_script=[],
+                stdout_tail="",
+                stderr_tail="",
+            )
+            _escrever_console_script(
+                indice=i,
+                arquivo=arquivo,
+                fonte_label=fonte_label,
+                status_execucao="erro",
+                motivo_falha=motivo_falha,
+                return_code=None,
+                novos_script=[],
+                smart_summary={},
                 stdout_tail="",
                 stderr_tail="",
             )
